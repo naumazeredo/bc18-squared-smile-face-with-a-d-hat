@@ -115,6 +115,34 @@ public:
              map_loc.get_x(), map_loc.get_y());
       fflush(stdout);
     }
+
+    // XXX: Using fixed research queue
+    gc.queue_research(Worker);
+    gc.queue_research(Knight);
+    gc.queue_research(Rocket);
+    gc.queue_research(Knight);
+    gc.queue_research(Knight);
+    gc.queue_research(Ranger);
+
+    // Unassigned
+    gc.queue_research(Worker);
+    gc.queue_research(Worker);
+    gc.queue_research(Worker);
+
+    gc.queue_research(Ranger);
+    gc.queue_research(Ranger);
+
+    gc.queue_research(Mage);
+    gc.queue_research(Mage);
+    gc.queue_research(Mage);
+    gc.queue_research(Mage);
+
+    gc.queue_research(Healer);
+    gc.queue_research(Healer);
+    gc.queue_research(Healer);
+
+    gc.queue_research(Rocket);
+    gc.queue_research(Rocket);
   }
 
   void step() {
