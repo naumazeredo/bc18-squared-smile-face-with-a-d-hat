@@ -82,7 +82,7 @@ Position to_position(const MapLocation& map_location) { return { map_location.ge
 MapLocation to_map_location(const Position position, Planet planet) {
   return MapLocation { planet, position.first, position.second };
 }
-unsigned calculate_manhattan_distance(Position a, Position b) { return abs(a.first - b.first) + abs(a.second - b.second); }
+unsigned calc_manhattan_distance(Position a, Position b) { return abs(a.first - b.first) + abs(a.second - b.second); }
 
 using PlanetMatrix = vector<vector<pair<bool, unsigned>>>;
 
@@ -301,23 +301,24 @@ private:
 
     const auto& planet_matrix = my_planet_map_initial();
 
-    const unsigned move_cd = unit.get_movement_cooldown();
-    const unsigned unit_heat = unit.get_movement_heat();
     const auto unit_pos = to_position(unit.get_location().get_map_location());
 
     // Breadth-first search
     vector<vector<Ret>> matrix { my_planet_map().get_height(), vector<Ret> { my_planet_map().get_width(), { UINT_MAX, Center } } };
 
-    using Info = pair<unsigned, Position>;
-    queue<Info> q;
+    using Info = tuple<unsigned, unsigned, Position>;
+    auto f = calc_manhattan_distance;
 
-    q.push({ unit_heat, unit_pos });
-    matrix[unit_pos.second][unit_pos.first] = { unit_heat, Center };
+    priority_queue<Info, vector<Info>, greater<Info>> q;
+
+    q.push({ f(unit_pos, target_position), 0, unit_pos });
+    matrix[unit_pos.second][unit_pos.first] = { 0 , Center };
 
     while (!q.empty()) {
-      const auto u = q.front(); q.pop();
-      const auto u_heat = u.first;
-      const auto u_pos  = u.second;
+      const auto u = q.top(); q.pop();
+      const auto u_tot  = get<0>(u);
+      const auto u_dist = get<1>(u);
+      const auto u_pos  = get<2>(u);
 
       if (u_pos == target_position)
         break;
@@ -332,16 +333,22 @@ private:
             gc.has_unit_at_location(v_map_loc))
           continue;
 
-        auto v_heat = matrix[v_map_loc.get_y()][v_map_loc.get_x()].first;
-        if (v_heat > u_heat + move_cd) {
-          v_heat = u_heat + move_cd;
-          matrix[v_map_loc.get_y()][v_map_loc.get_x()] = { v_heat, direction };
-          q.push({ v_heat, to_position(v_map_loc) });
+        auto v_dist = matrix[v_map_loc.get_y()][v_map_loc.get_x()].first;
+        if (v_dist > u_dist + 1) {
+          v_dist = u_dist + 1;
+          matrix[v_map_loc.get_y()][v_map_loc.get_x()] = { v_dist, direction };
+          q.push({
+                   v_dist + f(to_position(v_map_loc), target_position),
+                   v_dist,
+                   to_position(v_map_loc)
+                 });
         }
       }
     }
 
-    const auto heat = matrix[target_position.second][target_position.first].first;
+    const auto move_cd = unit.get_movement_cooldown();
+    const auto unit_heat = unit.get_movement_heat();
+    const auto rounds = (unit_heat + matrix[target_position.second][target_position.first].first * move_cd) / HEAT_REGEN;
 
     // Backtrack
     auto dir = Center;
@@ -351,7 +358,7 @@ private:
       pos = pos.subtract(dir);
     }
 
-    return { heat / HEAT_REGEN, dir };
+    return { rounds, dir };
   }
 
   // Return the units that reach earlier on position
