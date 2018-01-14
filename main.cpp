@@ -182,13 +182,15 @@ private:
         const auto factories = my_units[Factory].size();
         if (factories == 0) return 1.0;
         if (factories < Consts::Factories) return 0.2;
-        return 0.0;
+        return -1.0;
       },
       [this] {
+        printf("-- Blueprint Factory --\n");
         // Can only construct if we have workers
         if (my_idle_units[Worker].size() == 0) return;
 
-        const auto best_position = calculate_best_build_position(Factory);
+        const auto best_position = calculate_best_blueprint_position(Factory);
+        build_at(best_position, Factory);
         // TODO
       }
     },
@@ -200,9 +202,30 @@ private:
       [this] {
         const auto factory_blueprints = my_blueprints[FactoryBlueprint].size();
         if (factory_blueprints > 0) return 1.0;
-        return 0.0;
+        return -1.0;
       },
-      [this] {}
+      [this] {
+        printf("-- Build Factory --\n");
+
+        const auto& factory_blueprints = my_blueprints[FactoryBlueprint];
+        if (factory_blueprints.size() == 0)
+          return;
+
+        vector<unsigned> blueprints { factory_blueprints.begin(), factory_blueprints.end() };
+
+        sort(all(blueprints),
+             [this](unsigned a, unsigned b) {
+               const auto fa = units[a], fb = units[b];
+               const auto pa = to_position(fa.get_location().get_map_location()),
+                          pb = to_position(fb.get_location().get_map_location());
+               return calculate_rounds_to_build(pa, Factory, fa.get_health()) <
+                      calculate_rounds_to_build(pb, Factory, fb.get_health());
+             });
+
+        const auto& unit = units[blueprints[0]];
+        const auto pos = to_position(unit.get_location().get_map_location());
+        build_at(pos, Factory);
+      }
     },
     { // BuildRocket
       [this] { return 0.0; },
@@ -213,14 +236,23 @@ private:
 
 
   void run_actions() {
-    vector<Actions> acts;
-    for (int i = 0; i < Actions::TotalActions; i++)
-      acts.push_back(static_cast<Actions>(i));
-    sort(all(acts),
-         [this](Actions a, Actions b) { return actions[a].priority() < actions[b].priority(); });
+    if (my_planet == Mars) return;
 
+    vector<pair<double, Actions>> acts;
+    for (int i = 0; i < Actions::TotalActions; i++)
+      acts.push_back({ actions[i].priority(), static_cast<Actions>(i) });
+
+    sort(all(acts));
+    reverse(all(acts));
+
+    /*
     for (auto act : acts)
-      actions[act].act();
+      printf("Action %d %lf\n", act.second, act.first);
+    fflush(stdout);
+    */
+
+    for (auto act : acts) if (act.first > 0)
+      actions[act.second].act();
   }
 
   const PlanetMap& my_planet_map() const { return my_planet == Earth ? earth : mars; }
@@ -292,14 +324,15 @@ private:
   }
 
   // Return numbers of rounds reach position and Direction of the next move to reach location
-  pair<unsigned, Direction> calculate_move_to_position(unsigned unit_id, Position target_position) const {
+  pair<unsigned, Direction> calculate_move_to_position(unsigned unit_id, Position target_pos, bool to_adj = false) const {
     using Ret = pair<unsigned, Direction>;
+    const auto& planet_matrix = my_planet_map_initial();
 
     const auto& unit = units.at(unit_id);
     if (!unit.get_location().is_on_map())
       return { UINT_MAX, Center };
 
-    const auto& planet_matrix = my_planet_map_initial();
+    const auto target_map_loc = to_map_location(target_pos, my_planet);
 
     const auto unit_pos = to_position(unit.get_location().get_map_location());
 
@@ -311,7 +344,7 @@ private:
 
     priority_queue<Info, vector<Info>, greater<Info>> q;
 
-    q.push({ f(unit_pos, target_position), 0, unit_pos });
+    q.push({ f(unit_pos, target_pos), 0, unit_pos });
     matrix[unit_pos.second][unit_pos.first] = { 0 , Center };
 
     while (!q.empty()) {
@@ -320,8 +353,11 @@ private:
       const auto u_dist = get<1>(u);
       const auto u_pos  = get<2>(u);
 
-      if (u_pos == target_position)
+      if ((to_adj and to_map_location(u_pos, my_planet).is_adjacent_to(target_map_loc)) or u_pos == target_pos) {
+        // Update target_pos (required if it's adjacent)
+        target_pos = u_pos;
         break;
+      }
 
       const auto u_map_loc = to_map_location(u_pos, my_planet);
       for (auto direction : DirectionsAdjacent) {
@@ -338,7 +374,7 @@ private:
           v_dist = u_dist + 1;
           matrix[v_map_loc.get_y()][v_map_loc.get_x()] = { v_dist, direction };
           q.push({
-                   v_dist + f(to_position(v_map_loc), target_position),
+                   v_dist + f(to_position(v_map_loc), target_pos),
                    v_dist,
                    to_position(v_map_loc)
                  });
@@ -348,11 +384,11 @@ private:
 
     const auto move_cd = unit.get_movement_cooldown();
     const auto unit_heat = unit.get_movement_heat();
-    const auto rounds = (unit_heat + matrix[target_position.second][target_position.first].first * move_cd) / HEAT_REGEN;
+    const auto rounds = (unit_heat + matrix[target_pos.second][target_pos.first].first * move_cd) / HEAT_REGEN;
 
     // Backtrack
     auto dir = Center;
-    auto pos = to_map_location(target_position, my_planet);
+    auto pos = to_map_location(target_pos, my_planet);
     while (matrix[pos.get_y()][pos.get_x()].second != Center) {
       dir = matrix[pos.get_y()][pos.get_x()].second;
       pos = pos.subtract(dir);
@@ -363,7 +399,7 @@ private:
 
   // Return the units that reach earlier on position
   // { unit id, rounds to reach, Direction of the next move to reach position }
-  vector<tuple<unsigned, unsigned, Direction>> get_nearest_units(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool only_idle = false) const {
+  vector<tuple<unsigned, unsigned, Direction>> get_nearest_units(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool only_idle = false, bool to_adj = false) const {
     using Ret = tuple<unsigned, unsigned, Direction>;
     set<Ret, bool(*)(Ret, Ret)> candidates ( [](Ret a, Ret b) { return get<1>(a) < get<1>(b); } );
 
@@ -372,7 +408,7 @@ private:
       for (auto unit_id : my_units[unit_type]) {
         const auto& unit = units.at(unit_id);
 
-        const auto move_info = calculate_move_to_position(unit_id, position);
+        const auto move_info = calculate_move_to_position(unit_id, position, to_adj);
 
         candidates.insert({ unit_id, move_info.first, move_info.second });
 
@@ -384,7 +420,46 @@ private:
     return vector<Ret>( candidates.begin(), candidates.end() );
   }
 
-  Position calculate_best_build_position(UnitType structure_type) const {
+  // TODO: change return to tuple<unsigned, vector<unsigned>> to return the worker ids that can help building
+  unsigned calculate_rounds_to_build(Position position, UnitType structure_type, unsigned cur_health = UINT_MAX) const {
+    const auto x = position.first;
+    const auto y = position.second;
+
+    vector<unsigned> rounds_workers_to_reach;
+    rounds_workers_to_reach.push_back(2000);
+
+    auto workers_near = get_nearest_units({ x, y }, WorkerBit, 4, true, true);
+    for (auto worker : workers_near) {
+      const auto rounds = get<1>(worker);
+      if (rounds != UINT_MAX)
+        rounds_workers_to_reach.push_back(rounds);
+    }
+
+    sort(all(rounds_workers_to_reach));
+
+    // Iterate on rounds workers reach the building to estimate the round it will get build
+    const auto max_health    = (structure_type == Factory) ? FACTORY_MAX_HEALTH : ROCKET_MAX_HEALTH;
+    unsigned current_health  = (cur_health == UINT_MAX) ? max_health / 4 : cur_health;
+    unsigned workers_at_work = 0;
+    unsigned rounds_taken    = 0;
+
+    for (auto round : rounds_workers_to_reach) {
+      const auto health_add = workers_at_work * BUILD_HEALTH * (round - rounds_taken);
+
+      if (current_health + health_add >= max_health) {
+        rounds_taken = rounds_taken + 1 + (max_health - current_health - 1)/(workers_at_work * BUILD_HEALTH); // ceiling logic
+        break;
+      }
+
+      current_health += health_add;
+      workers_at_work += 1;
+      rounds_taken = round;
+    }
+
+    return rounds_taken;
+  }
+
+  Position calculate_best_blueprint_position(UnitType structure_type) const {
     assert(my_planet == Earth);
 
     // TODO: Consider available space around structure
@@ -402,36 +477,7 @@ private:
             gc.has_unit_at_location({ Earth, x, y }))
           continue;
 
-        vector<unsigned> rounds_workers_to_reach;
-        rounds_workers_to_reach.push_back(2000);
-
-        auto workers_near = get_nearest_units({ x, y }, WorkerBit, 4, true);
-        for (auto worker : workers_near) {
-          const auto rounds = get<1>(worker);
-          if (rounds != UINT_MAX)
-            rounds_workers_to_reach.push_back(rounds);
-        }
-
-        sort(all(rounds_workers_to_reach));
-
-        // Iterate on rounds workers reach the building to estimate the round it will get build
-        const auto max_health    = (structure_type == Factory) ? FACTORY_MAX_HEALTH : ROCKET_MAX_HEALTH;
-        unsigned current_health  = max_health / 4;
-        unsigned workers_at_work = 0;
-        unsigned rounds_taken    = 0;
-
-        for (auto round : rounds_workers_to_reach) {
-          const auto health_add = workers_at_work * BUILD_HEALTH * (round - rounds_taken);
-
-          if (current_health + health_add >= max_health) {
-            rounds_taken = rounds_taken + 1 + (max_health - current_health - 1)/(workers_at_work * BUILD_HEALTH); // ceiling logic
-            break;
-          }
-
-          current_health += health_add;
-          workers_at_work += 1;
-          rounds_taken = round;
-        }
+        const auto rounds_taken = calculate_rounds_to_build({ x, y }, structure_type);
 
         // TODO: use updated map
         if (rounds_taken < get<0>(best) or (rounds_taken == get<0>(best) and earth_initial[y][x].second < get<1>(best))) {
@@ -447,9 +493,20 @@ private:
     return get<2>(best);
   }
 
-  // TODO: bool build_at(const MapLocation&, UnitType) const; // assign workers to build at location
+  // Assign workers to build at position
   void build_at(Position build_position, UnitType structure_type) {
     assert(my_planet == Earth);
+
+    // TODO: change to build(UnitType)
+    //       if there are blueprints of the type, focus on building them
+    //       otherwise calculate best position to build
+
+    if (build_position == InvalidPosition) {
+      printf("Can't build: (%d, %d). InvalidPosition!\n", build_position.first, build_position.second);
+      return;
+    }
+
+    printf("Build at (%d, %d)\n", build_position.first, build_position.second);
 
     const auto map_location = to_map_location(build_position, Earth);
     if (gc.has_unit_at_location(map_location)) {
@@ -461,18 +518,33 @@ private:
           return;
         } else {
           // Build
-          auto workers = get_nearest_units(build_position, WorkerBit, 1, true);
-          auto worker = units.at(get<0>(workers[0]));
+          // TODO: move only workers that help
+          auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
+
+          // Move to structure and try to build if adjacent
+          for (auto worker_ : workers) {
+            const auto worker_id = get<0>(worker_);
+            const auto dir = get<2>(worker_);
+
+            move_unit(worker_id, dir);
+            const auto worker = gc.get_unit(worker_id);
+            if (worker.get_location().get_map_location().is_adjacent_to(map_location)) {
+              build_structure(worker_id, unit.get_id());
+            }
+          }
         }
       }
     } else {
       // Blueprint
-      auto workers = get_nearest_units(build_position, WorkerBit, 1, true);
+      // TODO: move only workers that help
+      auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
       if (workers.empty()) {
         printf("Can't build: (%d, %d). No idle workers!\n", map_location.get_x(), map_location.get_y());
+        fflush(stdout);
         return;
       }
 
+      bool blueprinted = false;
       const auto& worker = units.at(get<0>(workers[0]));
       if (worker.get_location().is_adjacent_to(map_location)) {
         const auto direction = worker.get_location().get_map_location().direction_to(map_location);
@@ -480,15 +552,26 @@ private:
         if (gc.can_blueprint(worker.get_id(), structure_type, direction)) {
           gc.blueprint(worker.get_id(), structure_type, direction);
           set_unit_acted(worker.get_id());
-        } else {
-          printf("Can't build: (%d, %d). can_blueprint == false!\n", map_location.get_x(), map_location.get_y());
-          return;
+
+          blueprinted = true;
+
+          printf("Blueprint (%d, %d) (%u)\n", map_location.get_x(), map_location.get_y(), worker.get_id());
+        }
+      }
+
+      // Move to structure and try to build if adjacent
+      for (auto worker_ : workers) {
+        const auto worker_id = get<0>(worker_);
+        const auto dir = get<2>(worker_);
+
+        move_unit(worker_id, dir);
+        const auto worker = gc.get_unit(worker_id);
+        if (blueprinted and worker.get_location().get_map_location().is_adjacent_to(map_location)) {
+          const auto structure = gc.sense_unit_at_location(map_location);
+          build_structure(worker_id, structure.get_id());
         }
       }
     }
-
-    // If built -> error
-    // Move units to adjacent
   }
 
   void set_unit_acted(unsigned unit_id) {
@@ -496,7 +579,24 @@ private:
     my_idle_units[unit.get_unit_type()].erase(unit_id);
   }
 
-  // TODO: void move_unit(unsigned unit_id, Position target_position, bool to_adjacent = false) const;
+  void move_unit(unsigned unit_id, Direction direction) {
+    if (direction == Center)
+      return;
+
+    const auto unit = units[unit_id];
+    if (unit.get_movement_heat() < 10 and gc.can_move(unit_id, direction)) {
+      gc.move_robot(unit_id, direction);
+      set_unit_acted(unit_id);
+    }
+  }
+
+  void build_structure(unsigned worker_id, unsigned structure_id) {
+    if (gc.can_build(worker_id, structure_id)) {
+      gc.build(worker_id, structure_id);
+      set_unit_acted(worker_id);
+      printf("Building %u (%u)\n", structure_id, worker_id);
+    }
+  }
 
 
   // -------------------------------
