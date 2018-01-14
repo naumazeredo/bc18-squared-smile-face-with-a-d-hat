@@ -120,7 +120,7 @@ public:
   void step() {
     get_round_data();
 
-    printf("Round %d (%u)\n", round, my_karbonite);
+    printf("Round %d (%u)\n", current_round, my_karbonite);
     fflush(stdout);
 
     // Intel here
@@ -284,7 +284,7 @@ private:
   }
 
   void get_round_data() {
-    round = gc.get_round();
+    current_round = gc.get_round();
     my_karbonite = gc.get_karbonite();
 
     get_units();
@@ -403,26 +403,16 @@ private:
           continue;
 
         vector<unsigned> rounds_workers_to_reach;
-        rounds_workers_to_reach.push_back(UINT_MAX);
-
+        rounds_workers_to_reach.push_back(2000);
 
         auto workers_near = get_nearest_units({ x, y }, WorkerBit, 4, true);
         for (auto worker : workers_near) {
           const auto rounds = get<1>(worker);
-          if (round != UINT_MAX)
+          if (rounds != UINT_MAX)
             rounds_workers_to_reach.push_back(rounds);
         }
 
-        /*
-        for (auto worker_id : my_idle_units[Worker]) {
-          auto rounds_to_reach = calculate_move_to_position(worker_id, { x, y }).first;
-          if (rounds_to_reach != UINT_MAX)
-            rounds_workers_to_reach.push_back(rounds_to_reach);
-        }
-        */
-
         sort(all(rounds_workers_to_reach));
-
 
         // Iterate on rounds workers reach the building to estimate the round it will get build
         const auto max_health    = (structure_type == Factory) ? FACTORY_MAX_HEALTH : ROCKET_MAX_HEALTH;
@@ -432,24 +422,26 @@ private:
 
         for (auto round : rounds_workers_to_reach) {
           const auto health_add = workers_at_work * BUILD_HEALTH * (round - rounds_taken);
+
           if (current_health + health_add >= max_health) {
-            rounds_taken = 1 + (max_health - current_health - 1)/(workers_at_work * BUILD_HEALTH); // ceiling logic
+            rounds_taken = rounds_taken + 1 + (max_health - current_health - 1)/(workers_at_work * BUILD_HEALTH); // ceiling logic
             break;
           }
 
           current_health += health_add;
           workers_at_work += 1;
+          rounds_taken = round;
         }
 
         // TODO: use updated map
-        if (round < get<0>(best) or (round == get<0>(best) and earth_initial[y][x].second < get<1>(best))) {
-          best = { round, earth_initial[y][x].second, { x, y } };
+        if (rounds_taken < get<0>(best) or (rounds_taken == get<0>(best) and earth_initial[y][x].second < get<1>(best))) {
+          best = { rounds_taken, earth_initial[y][x].second, { x, y } };
         }
 
       }
     }
 
-    printf("Best build position: (%d %d) in %u rounds, losing %u karb.\n",
+    printf("Best build position: (%d, %d) in %u rounds, losing %u karb.\n",
            get<2>(best).first, get<2>(best).second, get<0>(best), get<1>(best));
 
     return get<2>(best);
@@ -523,7 +515,7 @@ private:
   const PlanetMatrix mars_initial;
 
   // Changed every round
-  unsigned round;
+  unsigned current_round;
   unsigned my_karbonite;
 
   PlanetMatrix planet_matrix; // current planet, using vision info and units information
