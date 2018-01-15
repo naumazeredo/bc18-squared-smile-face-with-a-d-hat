@@ -110,6 +110,7 @@ public:
 
     printf("Team %d\n", my_team);
 
+    /*
     for (auto unit : earth.get_initial_units()) {
       const auto map_loc = unit.get_location().get_map_location();
       printf("Unit %u from team %d at (%d, %d)\n",
@@ -117,6 +118,9 @@ public:
              map_loc.get_x(), map_loc.get_y());
       fflush(stdout);
     }
+    */
+
+    printf("Time left: %u\n", gc.get_time_left_ms());
 
     // XXX: Using fixed research queue
     gc.queue_research(Worker);
@@ -151,7 +155,7 @@ public:
     get_round_data();
 
     printf("Round %d (%u)\n", current_round, my_karbonite);
-    fflush(stdout);
+    printf("Research rounds left %u\n", gc.get_research_info().rounds_left());
 
     // Intel here
     run_actions();
@@ -604,8 +608,6 @@ private:
           return;
         } else {
           // Build
-          printf("BUILD\n");
-
           // TODO: move only workers that help
           auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
 
@@ -620,8 +622,6 @@ private:
               build_structure(worker_id, unit.get_id());
             }
           }
-
-          printf("---------\n");
         }
       }
     } else {
@@ -644,7 +644,7 @@ private:
 
           blueprinted = true;
 
-          printf("Blueprint (%d, %d) (%u)\n", map_location.get_x(), map_location.get_y(), worker.get_id());
+          printf("Blueprint built at (%d, %d) by %u\n", map_location.get_x(), map_location.get_y(), worker.get_id());
         }
       }
 
@@ -685,7 +685,7 @@ private:
     if (gc.can_build(worker_id, structure_id)) {
       gc.build(worker_id, structure_id);
       set_unit_acted(worker_id);
-      printf("Building %u (%u)\n", structure_id, worker_id);
+      printf("Worker %u building %u\n", worker_id, structure_id);
 
       // Remove built unit from blueprints
       const auto& structure = gc.get_unit(structure_id);
