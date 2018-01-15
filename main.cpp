@@ -57,6 +57,8 @@ enum {
   TOTAL_BLUEPRINTS = 2
 };
 
+int to_blueprint_type(UnitType type) { return (type == Factory) ? FactoryBlueprint : RocketBlueprint; }
+
 // Constants to ease stuff for multiple unit types
 using UnitTypeBitset = unsigned;
 
@@ -162,7 +164,7 @@ private:
   //
   struct Consts {
     static const unsigned Factories = 2;
-    static const unsigned Knights   = 4;
+    static const unsigned Knights   = 8;
   };
 
 
@@ -216,9 +218,6 @@ private:
         return -1.0;
       },
       [this] {
-        printf("-- Blueprint Factory --\n");
-        printf("Idle workers: %lu\n", my_idle_units[Worker].size()); fflush(stdout);
-
         // Can only construct if we have workers
         if (my_idle_units[Worker].size() == 0)
           return;
@@ -241,9 +240,6 @@ private:
         return -1.0;
       },
       [this] {
-        printf("-- Build Factory --\n");
-        printf("Idle workers: %lu\n", my_idle_units[Worker].size()); fflush(stdout);
-
         // Can only construct if we have workers
         if (my_idle_units[Worker].size() == 0)
           return;
@@ -286,7 +282,6 @@ private:
         return -1.0;
       },
       [this] {
-        printf("-- Build Knight --\n"); fflush(stdout);
         const auto& factories = my_units[Factory];
 
         for (auto factory_id : factories) {
@@ -331,15 +326,14 @@ private:
   };
   // ------------
 
-  void push_action(Actions action) { action_queue.push({ actions[action].priority(), action }); }
+  void push_action(Actions action) {
+    const auto priority = actions[action].priority();
+    if (priority >= 0.0)
+      action_queue.push({ priority, action });
+  }
 
   void run_actions() {
     if (my_planet == Mars) return;
-
-    // Cleanup
-    while (!action_queue.empty())
-      action_queue.pop();
-    //
 
     for (int i = 0; i < Actions::TotalActions; i++)
       push_action(static_cast<Actions>(i));
@@ -347,9 +341,7 @@ private:
     while (!action_queue.empty()) {
       const auto action = action_queue.top();
       action_queue.pop();
-
-      if (action.first > 0.0)
-        actions[action.second].act();
+      actions[action.second].act();
     }
   }
 
@@ -359,17 +351,6 @@ private:
   }
 
   void get_units() {
-    // Update planet matrix
-    // If any structure disappeared we have to set it's location passable
-    for (auto unit_ : units) {
-      auto unit = unit_.second;
-      if (unit.is_structure() and !gc.has_unit(unit.get_id())) {
-        // Unit not available anymore. Set terrain as passable on it's position
-        auto map_loc = unit.get_location().get_map_location();
-        planet_matrix[map_loc.get_y()][map_loc.get_x()] = { true, 0 };
-      }
-    }
-
     // Cleanup
     units.clear();
     for (int i = 0; i < TOTAL_UNIT_TYPES; i++) {
@@ -379,8 +360,6 @@ private:
     for (int i = 0; i < TOTAL_BLUEPRINTS; i++)
       my_blueprints[i].clear();
     // ----
-
-    printf("Idle units: ");
 
     auto all_units = gc.get_units();
     for (auto unit : all_units) {
@@ -395,14 +374,11 @@ private:
 
         // FIXME: units that can't move are considered as idle too
         my_idle_units[type].insert(id);
-        printf("(%d: %u) ", (int)type, id);
 
         if (unit.is_structure() and !unit.structure_is_built())
           my_blueprints[type == Factory ? FactoryBlueprint : RocketBlueprint].insert(id);
       }
     }
-
-    printf("\n");
   }
 
   void update_planet_matrix() {
@@ -412,7 +388,7 @@ private:
 
         if (unit.is_structure()) {
           auto map_location = unit.get_location().get_map_location();
-          planet_matrix[map_location.get_y()][map_location.get_x()] = { false, 0 };
+          planet_matrix[map_location.get_y()][map_location.get_x()] = { true, 0 };
         }
       }
     } else {
@@ -510,7 +486,7 @@ private:
 
     const auto& unit_list = only_idle ? my_idle_units : my_units;
     for (auto unit_type : RobotTypes) if (on_bitset(unit_type, bitset)) {
-      for (auto unit_id : my_units[unit_type]) {
+      for (auto unit_id : unit_list[unit_type]) {
         const auto& unit = units.at(unit_id);
 
         const auto move_info = calculate_move_to_position(unit_id, position, to_adj);
@@ -525,6 +501,7 @@ private:
     return vector<Ret>( candidates.begin(), candidates.end() );
   }
 
+  // TODO: calculate if structure exists instead of passing cur_health
   // TODO: change return to tuple<unsigned, vector<unsigned>> to return the worker ids that can help building
   unsigned calculate_rounds_to_build(Position position, UnitType structure_type, unsigned cur_health = UINT_MAX) const {
     const auto x = position.first;
@@ -627,9 +604,6 @@ private:
 
           // TODO: move only workers that help
           auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
-          printf("Workers: ");
-          for (auto worker_ : workers) printf("%u ", get<0>(worker_));
-          printf("\n");
 
           // Move to structure and try to build if adjacent
           for (auto worker_ : workers) {
@@ -652,7 +626,6 @@ private:
       auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
       if (workers.empty()) {
         printf("Can't build: (%d, %d). No idle workers!\n", map_location.get_x(), map_location.get_y());
-        fflush(stdout);
         return;
       }
 
@@ -687,12 +660,7 @@ private:
   }
 
   void set_unit_acted(unsigned unit_id) {
-    printf("Unit acted %u\n", unit_id);
     const auto& unit = units.at(unit_id);
-    printf("Units idle (%d): ", unit.get_unit_type());
-    for (auto idle_id : my_idle_units[unit.get_unit_type()]) printf("%u ", idle_id);
-    printf("\n");
-
     my_idle_units[unit.get_unit_type()].erase(unit_id);
   }
 
@@ -714,6 +682,13 @@ private:
       gc.build(worker_id, structure_id);
       set_unit_acted(worker_id);
       printf("Building %u (%u)\n", structure_id, worker_id);
+
+      // Remove built unit from blueprints
+      const auto& structure = gc.get_unit(structure_id);
+      if (structure.structure_is_built()) {
+        my_blueprints[to_blueprint_type(structure.get_unit_type())].erase(structure_id);
+        printf("Building done!\n");
+      }
     }
   }
 
