@@ -14,22 +14,29 @@
 #include <set>
 #include <queue>
 #include <chrono>
+#include <iterator>
 
 #include "bc.hpp"
 
+#include "hash.h"
+
 
 /*
+  // Debug time!
   auto now = chrono::high_resolution_clock::now();
   auto end = chrono::high_resolution_clock::now();
   auto dur = chrono::duration_cast<chrono::microseconds>(end - now).count();
 */
 
+// IDEA: Store the maximum number of units seen for the last 30 rounds. Might be useful for action priorities
+
+// TODO: Change pair<...> to tuple<...> for standardization
 
 using namespace bc;
 using namespace std;
 
 #define all(x) x.begin(), x.end()
-#define debug() printf("line %d", __LINE__); fflush(stdout);
+#define debug() printf("line %d\n", __LINE__); fflush(stdout);
 
 const int TOTAL_PLANETS    = 2;
 const int TOTAL_UNIT_TYPES = 7;
@@ -48,6 +55,7 @@ const vector<Direction> DirectionsAdjacent = { North, Northeast, East, Southeast
 
 const vector<UnitType> RobotTypes     = { Worker, Knight, Ranger, Mage, Healer };
 const vector<UnitType> StructureTypes = { Factory, Rocket };
+const vector<UnitType> AllTypes       = { Worker, Knight, Ranger, Mage, Healer, Factory, Rocket };
 
 // Types for blueprints
 // TODO: Continue UnitType enum values
@@ -71,8 +79,9 @@ const int HealerBit  = (1<<Healer);
 const int FactoryBit = (1<<Factory);
 const int RocketBit  = (1<<Rocket);
 
-const UnitTypeBitset Robots = WorkerBit | KnightBit | RangerBit | MageBit | HealerBit;
-const UnitTypeBitset Structures = FactoryBit | RocketBit;
+const UnitTypeBitset RobotBits     = WorkerBit | KnightBit | RangerBit | MageBit | HealerBit;
+const UnitTypeBitset StructureBits = FactoryBit | RocketBit;
+const UnitTypeBitset AllUnitBits   = RobotBits | StructureBits;
 
 bool on_bitset(UnitType unit_type, UnitTypeBitset unit_type_bitset) { return (1 << unit_type) & unit_type_bitset; }
 
@@ -87,6 +96,11 @@ MapLocation to_map_location(const Position position, Planet planet) {
 unsigned calc_manhattan_distance(Position a, Position b) { return abs(a.first - b.first) + abs(a.second - b.second); }
 
 using PlanetMatrix = vector<vector<pair<bool, unsigned>>>;
+
+// Auxiliar
+unsigned to_rounds(unsigned dist, unsigned unit_heat, unsigned move_cd) {
+  return (unit_heat + dist * move_cd) / HEAT_REGEN;
+}
 
 
 // --------------------------------------------------------------------------
@@ -110,15 +124,18 @@ public:
 
     printf("Team %d\n", my_team);
 
-    /*
     for (auto unit : earth.get_initial_units()) {
-      const auto map_loc = unit.get_location().get_map_location();
+      if (unit.get_team() != my_team) {
+        const auto position = to_position(unit.get_map_location());
+        enemy_base_candidates.insert(position);
+      }
+      /*
       printf("Unit %u from team %d at (%d, %d)\n",
              unit.get_id(), unit.get_team(),
              map_loc.get_x(), map_loc.get_y());
       fflush(stdout);
+      */
     }
-    */
 
     printf("Time left: %u\n", gc.get_time_left_ms());
 
@@ -155,7 +172,7 @@ public:
     get_round_data();
 
     printf("Round %d (%u)\n", current_round, my_karbonite);
-    printf("Research rounds left %u\n", gc.get_research_info().rounds_left());
+    //printf("Research rounds left %u\n", gc.get_research_info().rounds_left());
 
     // Intel here
     run_actions();
@@ -169,6 +186,8 @@ private:
   struct Consts {
     static const unsigned Factories = 2;
     static const unsigned Knights   = 8;
+
+    static const unsigned KnightSearchDistance = 10;
   };
 
 
@@ -189,6 +208,7 @@ private:
     */
 
     UnloadGarrison,
+    Attack, // XXX: Change to Explore?
 
     TotalActions
   };
@@ -216,14 +236,14 @@ private:
   const vector<Action> actions = {
     { // BlueprintFactory
       [this] {
-        const auto factories = my_units[Factory].size();
+        const auto factories = my_unit_ids[Factory].size();
         if (factories == 0) return 1.0;
         if (factories < Consts::Factories) return 0.2;
         return -1.0;
       },
       [this] {
         // Can only construct if we have workers
-        if (my_idle_units[Worker].size() == 0)
+        if (my_idle_unit_ids[Worker].size() == 0)
           return;
 
         const auto best_position = calculate_best_blueprint_position(Factory);
@@ -239,29 +259,29 @@ private:
     },
     { // BuildFactory
       [this] {
-        const auto factory_blueprints = my_blueprints[FactoryBlueprint].size();
+        const auto factory_blueprints = my_blueprint_ids[FactoryBlueprint].size();
         if (factory_blueprints > 0) return 1.0;
         return -1.0;
       },
       [this] {
         // Can only construct if we have workers
-        if (my_idle_units[Worker].size() == 0)
+        if (my_idle_unit_ids[Worker].size() == 0)
           return;
 
-        const auto& factory_blueprints = my_blueprints[FactoryBlueprint];
+        const auto& factory_blueprints = my_blueprint_ids[FactoryBlueprint];
         vector<unsigned> blueprints { factory_blueprints.begin(), factory_blueprints.end() };
 
         sort(all(blueprints),
              [this](unsigned a, unsigned b) {
                const auto fa = units[a], fb = units[b];
-               const auto pa = to_position(fa.get_location().get_map_location()),
-                          pb = to_position(fb.get_location().get_map_location());
+               const auto pa = to_position(fa.get_map_location()),
+                          pb = to_position(fb.get_map_location());
                return calculate_rounds_to_build(pa, Factory, fa.get_health()) <
                       calculate_rounds_to_build(pb, Factory, fb.get_health());
              });
 
         const auto& unit = units[blueprints[0]];
-        const auto pos = to_position(unit.get_location().get_map_location());
+        const auto pos = to_position(unit.get_map_location());
         build_at(pos, Factory);
 
         // Readd the action on queue
@@ -281,20 +301,20 @@ private:
         // TODO: Consider size of the enemy army (max visible attack units?)
         // TODO: Don't hardcode total number of knights
 
-        const auto total_factories = my_units[Factory].size();
+        const auto total_factories = my_unit_ids[Factory].size();
         if (total_factories == 0) return -1.0; // No factories to build
 
-        const auto total_knights = my_units[Knight].size();
+        const auto total_knights = my_unit_ids[Knight].size();
         if (total_knights < Consts::Knights) return 0.8 - 0.1 * total_knights;
         return -1.0;
       },
       [this] {
-        const auto& factories = my_units[Factory];
+        const auto factories = my_unit_ids[Factory];
 
         for (auto factory_id : factories) {
           const auto& factory = units[factory_id];
           if (gc.can_produce_robot(factory_id, Knight)) {
-            printf("Factory %u producing Knight!\n", factory_id); fflush(stdout);
+            printf("Factory %u producing Knight!\n", factory_id);
             gc.produce_robot(factory_id, Knight);
           }
         }
@@ -302,11 +322,11 @@ private:
     },
     { // UnloadGarrison
       [this] {
-        // TODO: have a
+        // TODO: Change this?
         return 0.9;
       }, // High priority to release units before other actions
       [this] {
-        const auto& factories = my_units[Factory];
+        const auto factories = my_unit_ids[Factory];
 
         for (auto factory_id : factories) {
           const auto& factory = units[factory_id];
@@ -321,7 +341,7 @@ private:
               }
 
               if (gc.can_unload(factory_id, dir)) {
-                printf("Factory %u unloading!\n", factory_id); fflush(stdout);
+                printf("Factory %u unloading!\n", factory_id);
                 gc.unload(factory_id, dir);
               }
             }
@@ -330,7 +350,51 @@ private:
           }
         }
       }
+    },
+    // XXX: Remove this and have better logic for attacking
+    { // Attack
+      [this] {
+        if (my_idle_unit_ids[Knight].size() == 0)
+          return -1.0;
+        return 0.2;
+      },
+      [this] {
+        const auto knight_ids = my_idle_unit_ids[Knight];
+
+        if (knight_ids.size() == 0)
+          return;
+
+        for (auto knight_id : knight_ids) {
+          const auto knight = units[knight_id];
+
+          if (!knight.is_on_map())
+            continue;
+
+          const auto knight_pos = to_position(knight.get_map_location());
+
+          const auto enemy_id_list = get_enemy_nearest_units(knight_pos, AllUnitBits, 1, true);
+          if (enemy_id_list.size() > 0 and get<1>(enemy_id_list[0]) < Consts::KnightSearchDistance) {
+            // Try to attack the unit
+            const auto enemy_id = get<0>(enemy_id_list[0]);
+            const auto dir      = get<2>(enemy_id_list[0]);
+
+            move_unit(knight_id, dir);
+            attack_unit(knight_id, enemy_id);
+          } else {
+            // No units nearby, go to the base direction
+            //tuple<Position, unsigned, Direction> calculate_enemy_nearest_base(Position pos) {
+            const auto base = calculate_enemy_nearest_base(knight_pos);
+            const auto target_dir = get<2>(base);
+            if (target_dir != Center) {
+              move_unit(knight_id, target_dir);
+            } else {
+              // No base to go after. Would be good to explore!
+            }
+          }
+        }
+      }
     }
+
   };
   // ------------
 
@@ -362,11 +426,12 @@ private:
     // Cleanup
     units.clear();
     for (int i = 0; i < TOTAL_UNIT_TYPES; i++) {
-      my_units[i].clear();
-      my_idle_units[i].clear();
+      enemy_unit_ids[i].clear();
+      my_unit_ids[i].clear();
+      my_idle_unit_ids[i].clear();
     }
     for (int i = 0; i < TOTAL_BLUEPRINTS; i++)
-      my_blueprints[i].clear();
+      my_blueprint_ids[i].clear();
     // ----
 
     auto all_units = gc.get_units();
@@ -378,13 +443,15 @@ private:
       units[id] = unit;
 
       if (team == my_team) {
-        my_units[type].insert(id);
+        my_unit_ids[type].insert(id);
 
         // FIXME: units that can't move are considered as idle too
-        my_idle_units[type].insert(id);
+        my_idle_unit_ids[type].insert(id);
 
         if (unit.is_structure() and !unit.structure_is_built())
-          my_blueprints[type == Factory ? FactoryBlueprint : RocketBlueprint].insert(id);
+          my_blueprint_ids[type == Factory ? FactoryBlueprint : RocketBlueprint].insert(id);
+      } else {
+        enemy_unit_ids[type].insert(id);
       }
     }
   }
@@ -395,7 +462,7 @@ private:
         const auto& unit = unit_.second;
 
         if (unit.is_structure()) {
-          auto map_location = unit.get_location().get_map_location();
+          auto map_location = unit.get_map_location();
           planet_matrix[map_location.get_y()][map_location.get_x()] = { true, 0 };
         }
       }
@@ -412,18 +479,10 @@ private:
     update_planet_matrix();
   }
 
-  // Return numbers of rounds reach position and Direction of the next move to reach location
-  pair<unsigned, Direction> calculate_move_to_position(unsigned unit_id, Position target_pos, bool to_adj = false) const {
+  // Returns distance reach position and Direction of the next move to reach location
+  pair<unsigned, Direction> calculate_move_to_position(Position pos, Position target_pos, bool to_adj = false) const {
     using Ret = pair<unsigned, Direction>;
     const auto& planet_matrix = my_planet_map_initial();
-
-    const auto& unit = units.at(unit_id);
-    if (!unit.get_location().is_on_map())
-      return { UINT_MAX, Center };
-
-    const auto target_map_loc = to_map_location(target_pos, my_planet);
-
-    const auto unit_pos = to_position(unit.get_location().get_map_location());
 
     // Breadth-first search
     vector<vector<Ret>> matrix { my_planet_map().get_height(), vector<Ret> { my_planet_map().get_width(), { UINT_MAX, Center } } };
@@ -433,8 +492,8 @@ private:
 
     priority_queue<Info, vector<Info>, greater<Info>> q;
 
-    q.push({ f(unit_pos, target_pos), 0, unit_pos });
-    matrix[unit_pos.second][unit_pos.first] = { 0 , Center };
+    q.push({ f(pos, target_pos), 0, pos });
+    matrix[pos.second][pos.first] = { 0 , Center };
 
     while (!q.empty()) {
       const auto u = q.top(); q.pop();
@@ -442,7 +501,7 @@ private:
       const auto u_dist = get<1>(u);
       const auto u_pos  = get<2>(u);
 
-      if ((to_adj and to_map_location(u_pos, my_planet).is_adjacent_to(target_map_loc)) or u_pos == target_pos) {
+      if ((to_adj and to_map_location(u_pos, my_planet).is_adjacent_to(to_map_location(target_pos, my_planet))) or u_pos == target_pos) {
         // Update target_pos (required if it's adjacent)
         target_pos = u_pos;
         break;
@@ -471,35 +530,40 @@ private:
       }
     }
 
-    const auto move_cd = unit.get_movement_cooldown();
-    const auto unit_heat = unit.get_movement_heat();
-    const auto rounds = (unit_heat + matrix[target_pos.second][target_pos.first].first * move_cd) / HEAT_REGEN;
+    const auto distance = matrix[target_pos.second][target_pos.first].first;
 
     // Backtrack
     auto dir = Center;
-    auto pos = to_map_location(target_pos, my_planet);
-    while (matrix[pos.get_y()][pos.get_x()].second != Center) {
-      dir = matrix[pos.get_y()][pos.get_x()].second;
-      pos = pos.subtract(dir);
+    auto cur_pos = to_map_location(target_pos, my_planet);
+    while (matrix[cur_pos.get_y()][cur_pos.get_x()].second != Center) {
+      dir = matrix[cur_pos.get_y()][cur_pos.get_x()].second;
+      cur_pos = cur_pos.subtract(dir);
     }
 
-    return { rounds, dir };
+    return { distance, dir };
   }
+
+  // TODO: DRY... get_nearest_<.> all have the same structure
 
   // Return the units that reach earlier on position
   // { unit id, rounds to reach, Direction of the next move to reach position }
-  vector<tuple<unsigned, unsigned, Direction>> get_nearest_units(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool only_idle = false, bool to_adj = false) const {
+  // TODO: remove to_adj
+  vector<tuple<unsigned, unsigned, Direction>> get_my_nearest_robots(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool only_idle = false, bool to_adj = false) const {
     using Ret = tuple<unsigned, unsigned, Direction>;
     set<Ret, bool(*)(Ret, Ret)> candidates ( [](Ret a, Ret b) { return get<1>(a) < get<1>(b); } );
 
-    const auto& unit_list = only_idle ? my_idle_units : my_units;
+    const auto& unit_list = only_idle ? my_idle_unit_ids : my_unit_ids;
     for (auto unit_type : RobotTypes) if (on_bitset(unit_type, bitset)) {
       for (auto unit_id : unit_list[unit_type]) {
         const auto& unit = units.at(unit_id);
 
-        const auto move_info = calculate_move_to_position(unit_id, position, to_adj);
+        const auto move_info = calculate_move_to_position(to_position(unit.get_map_location()), position, to_adj);
 
-        candidates.insert({ unit_id, move_info.first, move_info.second });
+        const auto unit_heat = unit.get_movement_heat();
+        const auto unit_move_cd = unit.get_movement_cooldown();
+        const auto rounds = to_rounds(move_info.first, unit_heat, unit_move_cd);
+
+        candidates.insert({ unit_id, rounds, move_info.second });
 
         if (candidates.size() > max_units)
           candidates.erase(candidates.end());
@@ -507,6 +571,50 @@ private:
     }
 
     return vector<Ret>( candidates.begin(), candidates.end() );
+  }
+
+
+  // Return the units that reach earlier on position
+  // { unit id, distance, Direction of the next move to reach the enemy }
+  // IMPORTANT: Direction of the next move is different from get_my_nearest_robots!
+  // TODO: remove to_adj
+  vector<tuple<unsigned, unsigned, Direction>> get_enemy_nearest_units(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool to_adj = false) const {
+    using Ret = tuple<unsigned, unsigned, Direction>;
+
+    if (max_units == 0)
+      return vector<Ret>();
+
+    set<Ret, bool(*)(Ret, Ret)> candidates ( [](Ret a, Ret b) { return get<1>(a) < get<1>(b); } );
+
+    const auto& unit_list = enemy_unit_ids;
+    for (auto unit_type : AllTypes) if (on_bitset(unit_type, bitset)) {
+      for (auto unit_id : unit_list[unit_type]) {
+        const auto& unit = units.at(unit_id);
+
+        const auto move_info = calculate_move_to_position(position, to_position(unit.get_map_location()), to_adj);
+        candidates.insert({ unit_id, move_info.first, move_info.second });
+
+        if (candidates.size() > max_units)
+          candidates.erase(prev(candidates.end()));
+      }
+    }
+
+    return vector<Ret>( candidates.begin(), candidates.end() );
+  }
+
+  // TODO: generalize for multiple results like get_enemy_nearest_robots?
+  // Calculate the nearest enemy base from the position given
+  tuple<Position, unsigned, Direction> calculate_enemy_nearest_base(Position pos) {
+    using Ret = tuple<Position, unsigned, Direction>;
+    Ret ans = { InvalidPosition, UINT_MAX, Center };
+    for (auto enemy_pos : enemy_base_candidates) {
+      const auto move = calculate_move_to_position(pos, enemy_pos);
+      if (move.first < get<1>(ans)) {
+        ans = { pos, move.first, move.second };
+      }
+    }
+
+    return ans;
   }
 
   // TODO: calculate if structure exists instead of passing cur_health
@@ -518,7 +626,7 @@ private:
     vector<unsigned> rounds_workers_to_reach;
     rounds_workers_to_reach.push_back(2000);
 
-    auto workers_near = get_nearest_units({ x, y }, WorkerBit, 4, true, true);
+    auto workers_near = get_my_nearest_robots({ x, y }, WorkerBit, 4, true, true);
     for (auto worker : workers_near) {
       const auto rounds = get<1>(worker);
       if (rounds != UINT_MAX)
@@ -558,7 +666,7 @@ private:
     // { rounds to build, karbonite at location, Position }
     tuple<unsigned, unsigned, Position> best = { UINT_MAX, UINT_MAX, InvalidPosition };
 
-    if (my_idle_units[Worker].size() == 0)
+    if (my_idle_unit_ids[Worker].size() == 0)
       return get<2>(best);
 
     for (int y = 0; y < earth_initial.size(); y++) {
@@ -609,7 +717,7 @@ private:
         } else {
           // Build
           // TODO: move only workers that help
-          auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
+          auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
 
           // Move to structure and try to build if adjacent
           for (auto worker_ : workers) {
@@ -618,7 +726,7 @@ private:
 
             move_unit(worker_id, dir);
             const auto worker = gc.get_unit(worker_id);
-            if (worker.get_location().get_map_location().is_adjacent_to(map_location)) {
+            if (worker.get_map_location().is_adjacent_to(map_location)) {
               build_structure(worker_id, unit.get_id());
             }
           }
@@ -627,7 +735,7 @@ private:
     } else {
       // Blueprint
       // TODO: move only workers that help
-      auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
+      auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
       if (workers.empty()) {
         printf("Can't build: (%d, %d). No idle workers!\n", map_location.get_x(), map_location.get_y());
         return;
@@ -636,7 +744,7 @@ private:
       bool blueprinted = false;
       const auto& worker = units.at(get<0>(workers[0]));
       if (worker.get_location().is_adjacent_to(map_location)) {
-        const auto direction = worker.get_location().get_map_location().direction_to(map_location);
+        const auto direction = worker.get_map_location().direction_to(map_location);
 
         if (gc.can_blueprint(worker.get_id(), structure_type, direction)) {
           gc.blueprint(worker.get_id(), structure_type, direction);
@@ -655,7 +763,7 @@ private:
 
         move_unit(worker_id, dir);
         const auto worker = gc.get_unit(worker_id);
-        if (blueprinted and worker.get_location().get_map_location().is_adjacent_to(map_location)) {
+        if (blueprinted and worker.get_map_location().is_adjacent_to(map_location)) {
           const auto structure = gc.sense_unit_at_location(map_location);
           build_structure(worker_id, structure.get_id());
         }
@@ -665,7 +773,7 @@ private:
 
   void set_unit_acted(unsigned unit_id) {
     const auto& unit = units.at(unit_id);
-    my_idle_units[unit.get_unit_type()].erase(unit_id);
+    my_idle_unit_ids[unit.get_unit_type()].erase(unit_id);
   }
 
   void move_unit(unsigned unit_id, Direction direction) {
@@ -681,6 +789,22 @@ private:
     }
   }
 
+  void attack_unit(unsigned unit_id, unsigned target_id) {
+    // FIXME: idleness is only measured getting the movement
+    set_unit_acted(unit_id);
+
+    const auto unit = units[unit_id];
+    if (unit.get_attack_heat() < 10 and gc.can_attack(unit_id, target_id)) {
+      gc.attack(unit_id, target_id);
+      printf("Attacking %u -> %u\n", unit_id, target_id);
+
+      if (!gc.has_unit(target_id)) {
+        printf("Unit %u died!\n", unit_id);
+        die_unit(target_id);
+      }
+    }
+  }
+
   void build_structure(unsigned worker_id, unsigned structure_id) {
     if (gc.can_build(worker_id, structure_id)) {
       gc.build(worker_id, structure_id);
@@ -690,10 +814,24 @@ private:
       // Remove built unit from blueprints
       const auto& structure = gc.get_unit(structure_id);
       if (structure.structure_is_built()) {
-        my_blueprints[to_blueprint_type(structure.get_unit_type())].erase(structure_id);
+        my_blueprint_ids[to_blueprint_type(structure.get_unit_type())].erase(structure_id);
         printf("Building done!\n");
       }
     }
+  }
+
+  void die_unit(unsigned unit_id) {
+    const auto unit = units[unit_id];
+    const auto type = unit.get_unit_type();
+    if (unit.get_team() == my_team) {
+      // TODO: shouldn't happen
+      // If using mage then use get_units?
+      // if commanding disintegrate then implement?
+    } else {
+      enemy_unit_ids[type].erase(unit_id);
+    }
+
+    units.erase(unit_id);
   }
 
 
@@ -719,14 +857,21 @@ private:
   PlanetMatrix planet_matrix; // current planet, using vision info and units information
 
   unordered_map<unsigned, Unit> units;
-  unordered_set<unsigned> my_units[TOTAL_UNIT_TYPES];
-  unordered_set<unsigned> my_blueprints[TOTAL_BLUEPRINTS];
-  // TODO: my_garrisoned_units
-  // TODO: my_space_units
-  // TODO: enemy_units (by type)
+
+  unordered_set<unsigned> enemy_unit_ids[TOTAL_UNIT_TYPES];
+
+  unordered_set<unsigned> my_unit_ids[TOTAL_UNIT_TYPES];
+  unordered_set<unsigned> my_blueprint_ids[TOTAL_BLUEPRINTS];
+  // TODO: my_unit_ids_in_garrison
+  // TODO: my_unit_ids_in_space
+  // TODO: enemy_unit_ids (by type)
 
   // TODO: Optimize this! idleness for move and action?
-  unordered_set<unsigned> my_idle_units[TOTAL_UNIT_TYPES];
+  unordered_set<unsigned> my_idle_unit_ids[TOTAL_UNIT_TYPES];
+
+  // TODO: when spot an enemy factory add to enemy_base_candidates
+  // TODO: verify if has_unit_at_location and can_sense_location to remove base candidate
+  unordered_set<Position, pair_hash> enemy_base_candidates;
 
   // ---------
 
