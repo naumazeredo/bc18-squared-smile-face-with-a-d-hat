@@ -162,6 +162,7 @@ private:
   //
   struct Consts {
     static const unsigned Factories = 2;
+    static const unsigned Knights   = 4;
   };
 
 
@@ -171,15 +172,17 @@ private:
     BlueprintRocket,
     BuildFactory,
     BuildRocket,
-    /*
     BuildWorker,
     BuildKnight,
+    /*
     BuildRanger,
     BuildMage,
     BuildHealer,
     Harvest,
     Replicate,
     */
+
+    UnloadGarrison,
 
     TotalActions
   };
@@ -199,7 +202,7 @@ private:
 
   // HiveMind Action
   struct Action {
-    const function<double()> priority; // Between 0 and 1 (0 = no priority, 1 = top priority)
+    const function<double()> priority; // Between 0 and 1 (0 = no priority, 1 = top priority), -1 if disabled
     const function<void()> act;
   };
 
@@ -214,16 +217,21 @@ private:
       },
       [this] {
         printf("-- Blueprint Factory --\n");
+        printf("Idle workers: %lu\n", my_idle_units[Worker].size()); fflush(stdout);
+
         // Can only construct if we have workers
-        if (my_idle_units[Worker].size() == 0) return;
+        if (my_idle_units[Worker].size() == 0)
+          return;
 
         const auto best_position = calculate_best_blueprint_position(Factory);
         build_at(best_position, Factory);
-        // TODO
+
+        // Readd the action on queue
+        push_action(BlueprintFactory);
       }
     },
     { // BlueprintRocket
-      [this] { return 0.0; },
+      [this] { return -1.0; },
       [this] {}
     },
     { // BuildFactory
@@ -234,11 +242,13 @@ private:
       },
       [this] {
         printf("-- Build Factory --\n");
+        printf("Idle workers: %lu\n", my_idle_units[Worker].size()); fflush(stdout);
 
-        const auto& factory_blueprints = my_blueprints[FactoryBlueprint];
-        if (factory_blueprints.size() == 0)
+        // Can only construct if we have workers
+        if (my_idle_units[Worker].size() == 0)
           return;
 
+        const auto& factory_blueprints = my_blueprints[FactoryBlueprint];
         vector<unsigned> blueprints { factory_blueprints.begin(), factory_blueprints.end() };
 
         sort(all(blueprints),
@@ -253,34 +263,94 @@ private:
         const auto& unit = units[blueprints[0]];
         const auto pos = to_position(unit.get_location().get_map_location());
         build_at(pos, Factory);
+
+        // Readd the action on queue
+        push_action(BuildFactory);
       }
     },
     { // BuildRocket
-      [this] { return 0.0; },
+      [this] { return -1.0; },
       [this] {}
+    },
+    { // BuildWorker
+      [this] { return -1.0; },
+      [this] {}
+    },
+    { // BuildKnight
+      [this] {
+        const auto total_factories = my_units[Factory].size();
+        if (total_factories == 0) return -1.0; // No factories to build
+
+        const auto total_knights = my_units[Knight].size();
+        if (total_knights < Consts::Knights) return 0.8 - 0.1 * total_knights;
+        return -1.0;
+      },
+      [this] {
+        printf("-- Build Knight --\n"); fflush(stdout);
+        const auto& factories = my_units[Factory];
+
+        for (auto factory_id : factories) {
+          const auto& factory = units[factory_id];
+          if (gc.can_produce_robot(factory_id, Knight)) {
+            printf("Factory %u producing Knight!\n", factory_id); fflush(stdout);
+            gc.produce_robot(factory_id, Knight);
+          }
+        }
+      }
+    },
+    { // UnloadGarrison
+      [this] {
+        return 0.9;
+      }, // High priority to release units before other actions
+      [this] {
+        const auto& factories = my_units[Factory];
+
+        for (auto factory_id : factories) {
+          const auto& factory = units[factory_id];
+          const auto garrison = factory.get_structure_garrison();
+
+          while (garrison.size() > 0) {
+            bool can_unload = true;
+            for (auto dir : Directions) {
+              if (dir == Center) {
+                can_unload = false;
+                break;
+              }
+
+              if (gc.can_unload(factory_id, dir)) {
+                printf("Factory %u unloading!\n", factory_id); fflush(stdout);
+                gc.unload(factory_id, dir);
+              }
+            }
+
+            if (!can_unload) break;
+          }
+        }
+      }
     }
   };
   // ------------
 
+  void push_action(Actions action) { action_queue.push({ actions[action].priority(), action }); }
 
   void run_actions() {
     if (my_planet == Mars) return;
 
-    vector<pair<double, Actions>> acts;
+    // Cleanup
+    while (!action_queue.empty())
+      action_queue.pop();
+    //
+
     for (int i = 0; i < Actions::TotalActions; i++)
-      acts.push_back({ actions[i].priority(), static_cast<Actions>(i) });
+      push_action(static_cast<Actions>(i));
 
-    sort(all(acts));
-    reverse(all(acts));
+    while (!action_queue.empty()) {
+      const auto action = action_queue.top();
+      action_queue.pop();
 
-    /*
-    for (auto act : acts)
-      printf("Action %d %lf\n", act.second, act.first);
-    fflush(stdout);
-    */
-
-    for (auto act : acts) if (act.first > 0)
-      actions[act.second].act();
+      if (action.first > 0.0)
+        actions[action.second].act();
+    }
   }
 
   const PlanetMap& my_planet_map() const { return my_planet == Earth ? earth : mars; }
@@ -310,6 +380,8 @@ private:
       my_blueprints[i].clear();
     // ----
 
+    printf("Idle units: ");
+
     auto all_units = gc.get_units();
     for (auto unit : all_units) {
       const auto id   = unit.get_id();
@@ -319,13 +391,18 @@ private:
       units[id] = unit;
 
       if (team == my_team) {
-        my_idle_units[type].insert(id);
         my_units[type].insert(id);
+
+        // FIXME: units that can't move are considered as idle too
+        my_idle_units[type].insert(id);
+        printf("(%d: %u) ", (int)type, id);
 
         if (unit.is_structure() and !unit.structure_is_built())
           my_blueprints[type == Factory ? FactoryBlueprint : RocketBlueprint].insert(id);
       }
     }
+
+    printf("\n");
   }
 
   void update_planet_matrix() {
@@ -546,8 +623,13 @@ private:
           return;
         } else {
           // Build
+          printf("BUILD\n");
+
           // TODO: move only workers that help
           auto workers = get_nearest_units(build_position, WorkerBit, 4, true, true);
+          printf("Workers: ");
+          for (auto worker_ : workers) printf("%u ", get<0>(worker_));
+          printf("\n");
 
           // Move to structure and try to build if adjacent
           for (auto worker_ : workers) {
@@ -560,6 +642,8 @@ private:
               build_structure(worker_id, unit.get_id());
             }
           }
+
+          printf("---------\n");
         }
       }
     } else {
@@ -603,18 +687,25 @@ private:
   }
 
   void set_unit_acted(unsigned unit_id) {
+    printf("Unit acted %u\n", unit_id);
     const auto& unit = units.at(unit_id);
+    printf("Units idle (%d): ", unit.get_unit_type());
+    for (auto idle_id : my_idle_units[unit.get_unit_type()]) printf("%u ", idle_id);
+    printf("\n");
+
     my_idle_units[unit.get_unit_type()].erase(unit_id);
   }
 
   void move_unit(unsigned unit_id, Direction direction) {
+    // FIXME: idleness is only measured getting the movement
+    set_unit_acted(unit_id);
+
     if (direction == Center)
       return;
 
     const auto unit = units[unit_id];
     if (unit.get_movement_heat() < 10 and gc.can_move(unit_id, direction)) {
       gc.move_robot(unit_id, direction);
-      set_unit_acted(unit_id);
     }
   }
 
@@ -659,8 +750,7 @@ private:
 
   // Actions
 
-
-  map<Actions, int> action_map;
+  priority_queue<pair<double, Actions>> action_queue;
 };
 
 
