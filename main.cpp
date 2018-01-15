@@ -274,6 +274,9 @@ private:
     },
     { // BuildKnight
       [this] {
+        // TODO: Consider size of the enemy army (max visible attack units?)
+        // TODO: Don't hardcode total number of knights
+
         const auto total_factories = my_units[Factory].size();
         if (total_factories == 0) return -1.0; // No factories to build
 
@@ -295,6 +298,7 @@ private:
     },
     { // UnloadGarrison
       [this] {
+        // TODO: have a
         return 0.9;
       }, // High priority to release units before other actions
       [this] {
@@ -717,6 +721,9 @@ private:
   unordered_map<unsigned, Unit> units;
   unordered_set<unsigned> my_units[TOTAL_UNIT_TYPES];
   unordered_set<unsigned> my_blueprints[TOTAL_BLUEPRINTS];
+  // TODO: my_garrisoned_units
+  // TODO: my_space_units
+  // TODO: enemy_units (by type)
 
   // TODO: Optimize this! idleness for move and action?
   unordered_set<unsigned> my_idle_units[TOTAL_UNIT_TYPES];
