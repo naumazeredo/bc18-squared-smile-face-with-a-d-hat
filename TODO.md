@@ -1,31 +1,16 @@
 # TODO
 
-- [ ] Get the maps
-- [ ] Path finding
-- [ ] Floodfill (total kriptonite)
-- [ ] Improve tinyviewer
-- [ ] Build a state machine
-- [ ] Use the planet on decision making
+- [ ] Update enemy base candidates
+- [ ] Separate on multiple files
+- [ ] Improve get_nearest methods
 
 ## Strategy
 
-- [ ] General
-  - [ ] Maintain 5 workers alive
-  - [ ] Maintain 2 knights alive
-  - [ ] Maintain 4 knights alive
-  - [ ] Create a fixed research queue(?)
-- [ ] Factory Era
-  - [ ] Blueprint Factory
-  - [ ] Queue Rocket
-- [ ] Rocket Era
-  - [ ] Build 2 knights for protection
-  - [ ] Build 2 rangers
-- [ ] Earth Era
-  - [ ] Build rocket
-  - [ ] Have 1 workers to send to Mars
-  - [ ] Send 1 worker and 7 units to Mars
-  - [ ] Explore Mars
-  - [ ] Avoid enemy to explore Mars
+- [ ] ACTION: Build Range
+- [ ] ACTION: Explore planet
+- [ ] ACTION: Harvest
+- [ ] ACTION: Repair
+- [ ] Rocketry
 
 ## Ideas
 
