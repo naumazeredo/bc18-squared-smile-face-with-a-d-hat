@@ -556,6 +556,8 @@ private:
     for (auto unit_type : RobotTypes) if (on_bitset(unit_type, bitset)) {
       for (auto unit_id : unit_list[unit_type]) {
         const auto& unit = gc.get_unit(unit_id);
+        if (!unit.is_on_map())
+          continue;
 
         const auto move_info = calculate_move_to_position(to_position(unit.get_map_location()), position, to_adj);
 
@@ -590,6 +592,8 @@ private:
     for (auto unit_type : AllTypes) if (on_bitset(unit_type, bitset)) {
       for (auto unit_id : unit_list[unit_type]) {
         const auto& unit = gc.get_unit(unit_id);
+        if (!unit.is_on_map())
+          continue;
 
         const auto move_info = calculate_move_to_position(position, to_position(unit.get_map_location()), to_adj);
         candidates.insert({ unit_id, move_info.first, move_info.second });
@@ -726,7 +730,7 @@ private:
 
             move_unit(worker_id, dir);
             const auto worker = gc.get_unit(worker_id);
-            if (worker.get_map_location().is_adjacent_to(map_location)) {
+            if (worker.get_location().is_adjacent_to(map_location)) {
               build_structure(worker_id, unit.get_id());
             }
           }
@@ -743,8 +747,9 @@ private:
 
       bool blueprinted = false;
       const auto& worker = gc.get_unit(get<0>(workers[0]));
-      if (worker.get_location().is_adjacent_to(map_location)) {
-        const auto direction = worker.get_map_location().direction_to(map_location);
+      const auto worker_map_location = worker.get_map_location();
+      if (worker_map_location.is_adjacent_to(map_location)) {
+        const auto direction = worker_map_location.direction_to(map_location);
 
         if (gc.can_blueprint(worker.get_id(), structure_type, direction)) {
           gc.blueprint(worker.get_id(), structure_type, direction);
@@ -757,9 +762,9 @@ private:
       }
 
       // Move to structure and try to build if adjacent
-      for (auto worker_ : workers) {
-        const auto worker_id = get<0>(worker_);
-        const auto dir = get<2>(worker_);
+      for (auto worker_info : workers) {
+        const auto worker_id = get<0>(worker_info);
+        const auto dir = get<2>(worker_info);
 
         move_unit(worker_id, dir);
         const auto worker = gc.get_unit(worker_id);
