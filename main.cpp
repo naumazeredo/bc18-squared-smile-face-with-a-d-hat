@@ -184,10 +184,11 @@ public:
 private:
   //
   struct Consts {
-    static const unsigned Factories = 2;
-    static const unsigned Knights   = 8;
+    static const unsigned Factories = 5;
+    static const unsigned Knights   = 10;
+    static const unsigned Rangers   = 6;
 
-    static const unsigned KnightSearchDistance = 10;
+    static const unsigned KnightSearchDistance = 6;
   };
 
 
@@ -237,9 +238,7 @@ private:
     { // BlueprintFactory
       [this] {
         const auto factories = my_unit_ids[Factory].size();
-        if (factories == 0) return 1.0;
-        if (factories < Consts::Factories) return 0.2;
-        return -1.0;
+        return 1.0 * (1.0 - factories / static_cast<double>(Consts::Factories));
       },
       [this] {
         // Can only construct if we have workers
