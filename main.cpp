@@ -273,14 +273,14 @@ private:
 
         sort(all(blueprints),
              [this](unsigned a, unsigned b) {
-               const auto fa = units[a], fb = units[b];
+               const auto fa = gc.get_unit(a), fb = gc.get_unit(b);
                const auto pa = to_position(fa.get_map_location()),
                           pb = to_position(fb.get_map_location());
                return calculate_rounds_to_build(pa, Factory, fa.get_health()) <
                       calculate_rounds_to_build(pb, Factory, fb.get_health());
              });
 
-        const auto& unit = units[blueprints[0]];
+        const auto& unit = gc.get_unit(blueprints[0]);
         const auto pos = to_position(unit.get_map_location());
         build_at(pos, Factory);
 
@@ -312,7 +312,7 @@ private:
         const auto factories = my_unit_ids[Factory];
 
         for (auto factory_id : factories) {
-          const auto& factory = units[factory_id];
+          const auto& factory = gc.get_unit(factory_id);
           if (gc.can_produce_robot(factory_id, Knight)) {
             printf("Factory %u producing Knight!\n", factory_id);
             gc.produce_robot(factory_id, Knight);
@@ -329,7 +329,7 @@ private:
         const auto factories = my_unit_ids[Factory];
 
         for (auto factory_id : factories) {
-          const auto& factory = units[factory_id];
+          const auto& factory = gc.get_unit(factory_id);
           const auto garrison = factory.get_structure_garrison();
 
           while (garrison.size() > 0) {
@@ -365,7 +365,7 @@ private:
           return;
 
         for (auto knight_id : knight_ids) {
-          const auto knight = units[knight_id];
+          const auto knight = gc.get_unit(knight_id);
 
           if (!knight.is_on_map())
             continue;
@@ -440,7 +440,7 @@ private:
       const auto team = unit.get_team();
       const auto type = unit.get_unit_type();
 
-      units[id] = unit;
+      units.insert(unit.get_id());
 
       if (team == my_team) {
         my_unit_ids[type].insert(id);
@@ -458,8 +458,8 @@ private:
 
   void update_planet_matrix() {
     if (my_planet == Earth) {
-      for (auto unit_ : units) {
-        const auto& unit = unit_.second;
+      for (auto unit_id : units) {
+        const auto& unit = gc.get_unit(unit_id);
 
         if (unit.is_structure()) {
           auto map_location = unit.get_map_location();
@@ -555,7 +555,7 @@ private:
     const auto& unit_list = only_idle ? my_idle_unit_ids : my_unit_ids;
     for (auto unit_type : RobotTypes) if (on_bitset(unit_type, bitset)) {
       for (auto unit_id : unit_list[unit_type]) {
-        const auto& unit = units.at(unit_id);
+        const auto& unit = gc.get_unit(unit_id);
 
         const auto move_info = calculate_move_to_position(to_position(unit.get_map_location()), position, to_adj);
 
@@ -589,7 +589,7 @@ private:
     const auto& unit_list = enemy_unit_ids;
     for (auto unit_type : AllTypes) if (on_bitset(unit_type, bitset)) {
       for (auto unit_id : unit_list[unit_type]) {
-        const auto& unit = units.at(unit_id);
+        const auto& unit = gc.get_unit(unit_id);
 
         const auto move_info = calculate_move_to_position(position, to_position(unit.get_map_location()), to_adj);
         candidates.insert({ unit_id, move_info.first, move_info.second });
@@ -742,7 +742,7 @@ private:
       }
 
       bool blueprinted = false;
-      const auto& worker = units.at(get<0>(workers[0]));
+      const auto& worker = gc.get_unit(get<0>(workers[0]));
       if (worker.get_location().is_adjacent_to(map_location)) {
         const auto direction = worker.get_map_location().direction_to(map_location);
 
@@ -772,7 +772,7 @@ private:
   }
 
   void set_unit_acted(unsigned unit_id) {
-    const auto& unit = units.at(unit_id);
+    const auto& unit = gc.get_unit(unit_id);
     my_idle_unit_ids[unit.get_unit_type()].erase(unit_id);
   }
 
@@ -783,7 +783,7 @@ private:
     if (direction == Center)
       return;
 
-    const auto unit = units[unit_id];
+    const auto unit = gc.get_unit(unit_id);
     if (unit.get_movement_heat() < 10 and gc.can_move(unit_id, direction)) {
       gc.move_robot(unit_id, direction);
     }
@@ -793,7 +793,7 @@ private:
     // FIXME: idleness is only measured getting the movement
     set_unit_acted(unit_id);
 
-    const auto unit = units[unit_id];
+    const auto unit = gc.get_unit(unit_id);
     if (unit.get_attack_heat() < 10 and gc.can_attack(unit_id, target_id)) {
       gc.attack(unit_id, target_id);
       printf("Attacking %u -> %u\n", unit_id, target_id);
@@ -821,17 +821,15 @@ private:
   }
 
   void die_unit(unsigned unit_id) {
-    const auto unit = units[unit_id];
-    const auto type = unit.get_unit_type();
-    if (unit.get_team() == my_team) {
-      // TODO: shouldn't happen
-      // If using mage then use get_units?
-      // if commanding disintegrate then implement?
-    } else {
-      enemy_unit_ids[type].erase(unit_id);
+    units.erase(unit_id);
+    for (int i = 0; i < TOTAL_UNIT_TYPES; i++) {
+      enemy_unit_ids[i].erase(unit_id);
+      my_unit_ids[i].erase(unit_id);
+      my_idle_unit_ids[i].erase(unit_id);
     }
 
-    units.erase(unit_id);
+    for (int i = 0; i < TOTAL_BLUEPRINTS; i++)
+      my_blueprint_ids[i].erase(unit_id);
   }
 
 
@@ -856,7 +854,7 @@ private:
 
   PlanetMatrix planet_matrix; // current planet, using vision info and units information
 
-  unordered_map<unsigned, Unit> units;
+  unordered_set<unsigned> units;
 
   unordered_set<unsigned> enemy_unit_ids[TOTAL_UNIT_TYPES];
 
