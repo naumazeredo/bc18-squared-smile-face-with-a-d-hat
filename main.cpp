@@ -469,6 +469,28 @@ private:
     } else {
       // TODO: Consider asteroid strikes to increment karbonite on terrain
     }
+
+    // Remove enemy base candidates if in range and there's no structure at the location
+    vector<Position> enemy_base_candidates_to_remove;
+    for (auto base_candidate : enemy_base_candidates) {
+      const auto map_loc = to_map_location(base_candidate, my_planet);
+
+      if (gc.can_sense_location(map_loc)) {
+        auto remove = false;
+
+        if (!gc.has_unit_at_location(map_loc) or !gc.sense_unit_at_location(map_loc).is_structure())
+          enemy_base_candidates_to_remove.push_back(base_candidate);
+      }
+    }
+
+    // Add every enemy structure to the enemy base candidates
+    for (int unit_type = Factory; unit_type <= Rocket; unit_type++) {
+      for (auto unit_id : enemy_unit_ids[unit_type]) {
+        const auto unit = gc.get_unit(unit_id);
+        if (unit.is_structure())
+          enemy_base_candidates.insert(to_position(unit.get_map_location()));
+      }
+    }
   }
 
   void get_round_data() {
