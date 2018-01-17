@@ -102,7 +102,7 @@ using PlanetMatrix = vector<vector<pair<bool, unsigned>>>;
 
 
 // Auxiliar priority
-double inverse_linear_ramp(double min, double max, double f) { return max - (max - min) * f; }
+double inverse_linear_ramp(double min, double max, double f) { return max * (1.0 - f) + min * f; }
 
 // --------------------------------------------------------------------------
 
@@ -243,7 +243,7 @@ private:
       [this] {
         const auto factories = my_unit_ids[Factory].size();
         if (factories == 0) return 1.0;
-        return inverse_linear_ramp(0.0, 0.6, factories / static_cast<double>(Consts::Factories));
+        return inverse_linear_ramp(0.0, 0.5, factories / static_cast<double>(Consts::Factories));
       },
       [this] {
         printf("-- BlueprintFactory --\n");
@@ -270,11 +270,13 @@ private:
         const auto factory_blueprints = my_blueprint_ids[FactoryBlueprint].size();
         const auto factories = my_unit_ids[Factory].size();
 
-        if (factory_blueprints == 1)
+        if (factory_blueprints > 1)
           return 1.0;
+        /*
         else if (factory_blueprints > 0)
           //return inverse_linear_ramp(0.2, 0.8, factory_blueprints / static_cast<double>(factories));
           return 0.8;
+          */
 
         return -1.0;
       },
@@ -1017,6 +1019,7 @@ private:
             true
           );
 
+          /*
           printf("BUILD\n");
           printf("Workers assigned: %lu\n", workers_info.size());
           for (auto worker_info : workers_info)
@@ -1024,6 +1027,7 @@ private:
                    get<0>(worker_info), get<1>(worker_info),
                    get<2>(worker_info), get<3>(worker_info));
           fflush(stdout);
+          */
 
           // Move to structure and try to build if adjacent
           for (auto worker_info : workers_info) {
@@ -1146,6 +1150,12 @@ private:
   }
 
   void attack_unit(unsigned unit_id, unsigned target_id) {
+    if (!gc.has_unit(target_id)) {
+      printf("Attacking unit not present!\n");
+      die_unit(target_id);
+      return;
+    }
+
     // FIXME: idleness is only measured getting the movement
     set_unit_acted(unit_id);
 

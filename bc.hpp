@@ -79,7 +79,7 @@ if (!(condition)) {           \
 if (bc_has_err()) { \
   char* err; \
   uint8_t code = bc_get_last_err(&err); \
-  printf("[ERROR](" __FILE__ ": " S__LINE__ ") code %d: %s\n", code, err); \
+  fprintf(stderr,"[ERROR](" __FILE__ ": " S__LINE__ ") code %d: %s\n", code, err); \
   bc_free_string(err); \
   print_trace(); \
   exit(1); \
