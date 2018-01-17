@@ -49,9 +49,12 @@ const unsigned BUILD_HEALTH = 5;
 
 const unsigned HEAT_REGEN = 10;
 
+const unsigned FACTORY_COST   = 100;
+const unsigned REPLICATE_COST = 15;
 
-const vector<Direction> Directions         = { North, Northeast, East, Southeast, South, Southwest, West, Northwest, Center };
-const vector<Direction> DirectionsAdjacent = { North, Northeast, East, Southeast, South, Southwest, West, Northwest };
+
+const vector<Direction> Directions         = { North, East, South, West, Northeast, Southeast, Southwest, Northwest, Center };
+const vector<Direction> DirectionsAdjacent = { North, East, South, West, Northeast, Southeast, Southwest, Northwest };
 
 const vector<UnitType> RobotTypes     = { Worker, Knight, Ranger, Mage, Healer };
 const vector<UnitType> StructureTypes = { Factory, Rocket };
@@ -93,15 +96,13 @@ Position to_position(const MapLocation& map_location) { return { map_location.ge
 MapLocation to_map_location(const Position position, Planet planet) {
   return MapLocation { planet, position.first, position.second };
 }
-unsigned calc_manhattan_distance(Position a, Position b) { return abs(a.first - b.first) + abs(a.second - b.second); }
+unsigned calculate_distance(Position a, Position b) { return abs(a.first - b.first) + abs(a.second - b.second); }
 
 using PlanetMatrix = vector<vector<pair<bool, unsigned>>>;
 
-// Auxiliar
-unsigned to_rounds(unsigned dist, unsigned unit_heat, unsigned move_cd) {
-  return (unit_heat + dist * move_cd) / HEAT_REGEN;
-}
 
+// Auxiliar priority
+double inverse_linear_ramp(double min, double max, double f) { return max - (max - min) * f; }
 
 // --------------------------------------------------------------------------
 
@@ -110,6 +111,7 @@ public:
   HiveMind() :
       gc {},
          my_team { gc.get_team() },
+         enemy_team { other_team(my_team) },
          my_planet { gc.get_planet() },
          earth { gc.get_earth_map() },
          mars { gc.get_mars_map() },
@@ -129,15 +131,17 @@ public:
         const auto position = to_position(unit.get_map_location());
         enemy_base_candidates.insert(position);
       }
+
       /*
       printf("Unit %u from team %d at (%d, %d)\n",
              unit.get_id(), unit.get_team(),
-             map_loc.get_x(), map_loc.get_y());
+             unit.get_map_location().get_x(),
+             unit.get_map_location().get_y());
       fflush(stdout);
       */
     }
 
-    printf("Time left: %u\n", gc.get_time_left_ms());
+    //printf("Time left: %u\n", gc.get_time_left_ms());
 
     // XXX: Using fixed research queue
     gc.queue_research(Worker);
@@ -184,11 +188,12 @@ public:
 private:
   //
   struct Consts {
-    static const unsigned Factories = 5;
-    static const unsigned Knights   = 10;
-    static const unsigned Rangers   = 6;
+    static const unsigned Factories = 6;
+    static const unsigned Knights   = 20;
+    static const unsigned Rangers   = 12;
+    static const unsigned Workers   = 6;
 
-    static const unsigned KnightSearchDistance = 6;
+    static const unsigned AttackSearchDistance = 8;
   };
 
 
@@ -205,9 +210,8 @@ private:
     BuildMage,
     BuildHealer,
     Harvest,
-    Replicate,
     */
-
+    Replicate,
     UnloadGarrison,
     Attack, // XXX: Change to Explore?
 
@@ -238,18 +242,22 @@ private:
     { // BlueprintFactory
       [this] {
         const auto factories = my_unit_ids[Factory].size();
-        return 1.0 * (1.0 - factories / static_cast<double>(Consts::Factories));
+        return inverse_linear_ramp(0.0, 1.0, factories / static_cast<double>(Consts::Factories));
       },
       [this] {
+        printf("-- BlueprintFactory --\n");
+        printf("Idle workers: %lu\n", my_idle_unit_ids[Worker].size());
+
         // Can only construct if we have workers
         if (my_idle_unit_ids[Worker].size() == 0)
           return;
 
         const auto best_position = calculate_best_blueprint_position(Factory);
+
         build_at(best_position, Factory);
 
         // Readd the action on queue
-        push_action(BlueprintFactory);
+        //push_action(BlueprintFactory);
       }
     },
     { // BlueprintRocket
@@ -259,10 +267,19 @@ private:
     { // BuildFactory
       [this] {
         const auto factory_blueprints = my_blueprint_ids[FactoryBlueprint].size();
-        if (factory_blueprints > 0) return 1.0;
+        const auto factories = my_unit_ids[Factory].size();
+
+        if (factory_blueprints == 1)
+          return 1.0;
+        else if (factory_blueprints > 0)
+          return inverse_linear_ramp(0.2, 0.8, factory_blueprints / static_cast<double>(factories));
+
         return -1.0;
       },
       [this] {
+        printf("-- BuildFactory --\n");
+        printf("Idle workers: %lu\n", my_idle_unit_ids[Worker].size());
+
         // Can only construct if we have workers
         if (my_idle_unit_ids[Worker].size() == 0)
           return;
@@ -304,7 +321,8 @@ private:
         if (total_factories == 0) return -1.0; // No factories to build
 
         const auto total_knights = my_unit_ids[Knight].size();
-        if (total_knights < Consts::Knights) return 0.8 - 0.1 * total_knights;
+        if (total_knights < Consts::Knights)
+          return inverse_linear_ramp(0.0, 0.8, total_knights / static_cast<double>(Consts::Knights));
         return -1.0;
       },
       [this] {
@@ -315,6 +333,37 @@ private:
           if (gc.can_produce_robot(factory_id, Knight)) {
             printf("Factory %u producing Knight!\n", factory_id);
             gc.produce_robot(factory_id, Knight);
+          }
+        }
+      }
+    },
+    { // Replicate
+      [this] {
+        // Only replicate after having money (or after blueprint a factory)
+        const auto factories = my_unit_ids[Factory].size();
+        if (factories == 0 and my_karbonite < FACTORY_COST + REPLICATE_COST)
+          return -1.0;
+
+        const auto workers = my_unit_ids[Worker].size();
+        return inverse_linear_ramp(0.0, 0.9, workers / static_cast<double>(Consts::Workers));
+      },
+      [this] {
+        printf("-- Replicating --\n");
+        printf("Workers/Idle workers: %lu/%lu\n",
+               my_unit_ids[Worker].size(), my_idle_unit_ids[Worker].size());
+
+        const auto worker_ids = my_idle_unit_ids[Worker];
+        if (worker_ids.size() == 0)
+          return;
+
+        for (auto worker_id : worker_ids) {
+          for (auto dir : DirectionsAdjacent) {
+            if (gc.can_replicate(worker_id, dir)) {
+              replicate_worker(worker_id, dir);
+
+              push_action(Replicate);
+              return;
+            }
           }
         }
       }
@@ -358,34 +407,41 @@ private:
         return 0.2;
       },
       [this] {
-        const auto knight_ids = my_idle_unit_ids[Knight];
+        const auto offensive_unit_ids = get_units(my_team, KnightBit | RangerBit, true);
 
-        if (knight_ids.size() == 0)
+        if (offensive_unit_ids.size() == 0)
           return;
 
-        for (auto knight_id : knight_ids) {
-          const auto knight = gc.get_unit(knight_id);
+        for (auto unit_id : offensive_unit_ids) {
+          const auto unit = gc.get_unit(unit_id);
 
-          if (!knight.is_on_map())
+          if (!unit.is_on_map())
             continue;
 
-          const auto knight_pos = to_position(knight.get_map_location());
+          const auto unit_pos = to_position(unit.get_map_location());
 
-          const auto enemy_id_list = get_enemy_nearest_units(knight_pos, AllUnitBits, 1, true);
-          if (enemy_id_list.size() > 0 and get<1>(enemy_id_list[0]) < Consts::KnightSearchDistance) {
+          //const auto enemy_id_list = get_enemy_nearest_units(unit_pos, AllUnitBits, 1, true);
+          const auto enemy_id_list = get_nearest_units(
+            enemy_team,
+            unit_pos,
+            AllUnitBits,
+            1
+          );
+
+          if (enemy_id_list.size() > 0 and get<1>(enemy_id_list[0]) < Consts::AttackSearchDistance) {
             // Try to attack the unit
             const auto enemy_id = get<0>(enemy_id_list[0]);
-            const auto dir      = get<2>(enemy_id_list[0]);
+            const auto dir      = get<2>(enemy_id_list[0]); // dir pos -> unit
 
-            move_unit(knight_id, dir);
-            attack_unit(knight_id, enemy_id);
+            move_unit(unit_id, dir);
+            attack_unit(unit_id, enemy_id);
           } else {
             // No units nearby, go to the base direction
-            //tuple<Position, unsigned, Direction> calculate_enemy_nearest_base(Position pos) {
-            const auto base = calculate_enemy_nearest_base(knight_pos);
+            //tuple<Position, unsigned, Direction> calculate_enemy_nearest_base(Position pos)
+            const auto base = calculate_enemy_nearest_base(unit_pos);
             const auto target_dir = get<2>(base);
             if (target_dir != Center) {
-              move_unit(knight_id, target_dir);
+              move_unit(unit_id, target_dir);
             } else {
               // No base to go after. Would be good to explore!
             }
@@ -421,9 +477,9 @@ private:
     return my_planet == Earth ? earth_initial : mars_initial;
   }
 
-  void get_units() {
+  void get_units_data() {
     // Cleanup
-    units.clear();
+    unit_ids.clear();
     for (int i = 0; i < TOTAL_UNIT_TYPES; i++) {
       enemy_unit_ids[i].clear();
       my_unit_ids[i].clear();
@@ -439,7 +495,7 @@ private:
       const auto team = unit.get_team();
       const auto type = unit.get_unit_type();
 
-      units.insert(unit.get_id());
+      unit_ids.insert(unit.get_id());
 
       if (team == my_team) {
         my_unit_ids[type].insert(id);
@@ -457,7 +513,7 @@ private:
 
   void update_planet_matrix() {
     if (my_planet == Earth) {
-      for (auto unit_id : units) {
+      for (auto unit_id : unit_ids) {
         const auto& unit = gc.get_unit(unit_id);
 
         if (unit.is_structure()) {
@@ -496,72 +552,78 @@ private:
     current_round = gc.get_round();
     my_karbonite = gc.get_karbonite();
 
-    get_units();
+    get_units_data();
     update_planet_matrix();
   }
 
-  // Returns distance reach position and Direction of the next move to reach location
-  pair<unsigned, Direction> calculate_move_to_position(Position pos, Position target_pos, bool to_adj = false) const {
-    using Ret = pair<unsigned, Direction>;
+  // { distance, Direction pos -> target, Direction target -> pos }
+  tuple<unsigned, Direction, Direction>
+  calculate_move_to_position(Position pos, Position target_pos) const {
+    using Ret = tuple<unsigned, Direction, Direction>;
     const auto& planet_matrix = my_planet_map_initial();
 
-    // Breadth-first search
-    vector<vector<Ret>> matrix { my_planet_map().get_height(), vector<Ret> { my_planet_map().get_width(), { UINT_MAX, Center } } };
+    // A-star
+    using MatInfo = tuple<unsigned, Direction>;
+    vector<vector<MatInfo>> matrix { my_planet_map().get_height(), vector<MatInfo> { my_planet_map().get_width(), { UINT_MAX, Center } } };
 
-    using Info = tuple<unsigned, unsigned, Position>;
-    auto f = calc_manhattan_distance;
+    using Info = tuple<unsigned, Position>;
+    auto f = calculate_distance;
 
     priority_queue<Info, vector<Info>, greater<Info>> q;
 
-    q.push({ f(pos, target_pos), 0, pos });
+    q.push({ f(pos, target_pos), pos });
     matrix[pos.second][pos.first] = { 0 , Center };
 
     while (!q.empty()) {
       const auto u = q.top(); q.pop();
-      const auto u_tot  = get<0>(u);
-      const auto u_dist = get<1>(u);
-      const auto u_pos  = get<2>(u);
+      const auto u_pos  = get<1>(u);
+      const auto u_map_loc = to_map_location(u_pos, my_planet);
 
-      if ((to_adj and to_map_location(u_pos, my_planet).is_adjacent_to(to_map_location(target_pos, my_planet))) or u_pos == target_pos) {
+      const auto u_dist = get<0>(matrix[u_pos.second][u_pos.first]);
+
+      if (u_pos == target_pos) {
         // Update target_pos (required if it's adjacent)
         target_pos = u_pos;
         break;
       }
 
-      const auto u_map_loc = to_map_location(u_pos, my_planet);
+      if (gc.has_unit_at_location(u_map_loc) and
+          u_pos != pos and u_pos != target_pos)
+        continue;
+
       for (auto direction : DirectionsAdjacent) {
         const auto v_map_loc = u_map_loc.add(direction);
 
         // TODO: use updated map
         if (!my_planet_map().is_on_map(v_map_loc) or
-            !planet_matrix[v_map_loc.get_y()][v_map_loc.get_x()].first or
-            gc.has_unit_at_location(v_map_loc))
+            !planet_matrix[v_map_loc.get_y()][v_map_loc.get_x()].first)
           continue;
 
-        auto v_dist = matrix[v_map_loc.get_y()][v_map_loc.get_x()].first;
+        auto v_dist = get<0>(matrix[v_map_loc.get_y()][v_map_loc.get_x()]);
         if (v_dist > u_dist + 1) {
           v_dist = u_dist + 1;
           matrix[v_map_loc.get_y()][v_map_loc.get_x()] = { v_dist, direction };
           q.push({
                    v_dist + f(to_position(v_map_loc), target_pos),
-                   v_dist,
                    to_position(v_map_loc)
                  });
         }
       }
     }
 
-    const auto distance = matrix[target_pos.second][target_pos.first].first;
+    const auto distance = get<0>(matrix[target_pos.second][target_pos.first]);
+    const auto dir_target_pos = direction_opposite(get<1>(matrix[target_pos.second][target_pos.first]));
+    const auto dir_pos_target = [&] {
+      auto dir = Center;
+      auto pos = to_map_location(target_pos, my_planet);
+      while (get<1>(matrix[pos.get_y()][pos.get_x()]) != Center) {
+        dir = get<1>(matrix[pos.get_y()][pos.get_x()]);
+        pos = pos.subtract(dir);
+      }
+      return dir;
+    }();
 
-    // Backtrack
-    auto dir = Center;
-    auto cur_pos = to_map_location(target_pos, my_planet);
-    while (matrix[cur_pos.get_y()][cur_pos.get_x()].second != Center) {
-      dir = matrix[cur_pos.get_y()][cur_pos.get_x()].second;
-      cur_pos = cur_pos.subtract(dir);
-    }
-
-    return { distance, dir };
+    return { distance, dir_pos_target, dir_target_pos };
   }
 
   // TODO: DRY... get_nearest_<.> all have the same structure
@@ -569,6 +631,8 @@ private:
   // Return the units that reach earlier on position
   // { unit id, rounds to reach, Direction of the next move to reach position }
   // TODO: remove to_adj
+
+  /*
   vector<tuple<unsigned, unsigned, Direction>> get_my_nearest_robots(Position position, UnitTypeBitset bitset, unsigned max_units = UINT_MAX, bool only_idle = false, bool to_adj = false) const {
     using Ret = tuple<unsigned, unsigned, Direction>;
     set<Ret, bool(*)(Ret, Ret)> candidates ( [](Ret a, Ret b) { return get<1>(a) < get<1>(b); } );
@@ -626,6 +690,140 @@ private:
 
     return vector<Ret>( candidates.begin(), candidates.end() );
   }
+  */
+
+  // { unit id, distance, Direction position -> unit, Direction unit -> position }
+  /*
+  vector<tuple<unsigned, unsigned, Direction, Direction>>
+  get_nearest_units(Team team,
+                    Position position,
+                    UnitTypeBitset bitset = AllUnitBits,
+                    unsigned max_units    = UINT_MAX,
+                    bool idle_units       = false) const {
+    using Ret = tuple<unsigned, unsigned, Direction, Direction>;
+
+    const auto& unit_list = [=]() {
+      if (team == my_team) return idle_units ? my_idle_unit_ids : my_unit_ids;
+      else return enemy_unit_ids;
+    }();
+
+    vector<Ret> nearest_units;
+
+    // Breadth-First Search
+
+    // Recovery matrix { distance, direction cell -> initial position }
+    using MatInfo = tuple<unsigned, Direction>;
+    vector<vector<MatInfo>> matrix { my_planet_map().get_height(), vector<MatInfo> { my_planet_map().get_width(), { UINT_MAX, Center } } };
+
+    queue<Position> q;
+
+    q.push(position);
+    matrix[position.second][position.first] = { 0, Center };
+
+    while (!q.empty() and nearest_units.size() < max_units) {
+      const auto u_pos  = q.front();
+      const auto u_dist = get<0>(matrix[u_pos.second][u_pos.first]);
+      q.pop();
+
+      const auto u_map_loc = to_map_location(u_pos, my_planet);
+
+      if (gc.has_unit_at_location(u_map_loc)) {
+        const auto unit = gc.sense_unit_at_location(u_map_loc);
+        if (unit.get_team() == team and on_bitset(unit.get_unit_type(), bitset)) {
+          const auto dir_unit_pos = get<1>(matrix[u_pos.second][u_pos.first]);
+
+          const auto dir_pos_unit = [&] {
+            auto dir = Center;
+            auto pos = u_map_loc;
+            while (get<1>(matrix[pos.get_y()][pos.get_x()]) != Center) {
+              dir = get<1>(matrix[pos.get_y()][pos.get_x()]);
+              pos = pos.add(dir);
+            }
+            return direction_opposite(dir);
+          }();
+
+          nearest_units.push_back({ unit.get_id(), u_dist, dir_pos_unit, dir_unit_pos });
+        } else {
+          if (u_pos != position)
+            continue; // Don't ignore other units
+        }
+      }
+
+      for (auto direction : DirectionsAdjacent) {
+        const auto v_map_loc = u_map_loc.subtract(direction);
+
+        if (!my_planet_map().is_on_map(v_map_loc) or
+            !my_planet_map().is_passable_terrain_at(v_map_loc))
+          continue;
+
+        auto v_dist = get<0>(matrix[v_map_loc.get_y()][v_map_loc.get_x()]);
+        if (v_dist > u_dist + 1) {
+          v_dist = u_dist + 1;
+          matrix[v_map_loc.get_y()][v_map_loc.get_x()] = { v_dist, direction };
+          q.push(to_position(v_map_loc));
+        }
+      }
+    }
+
+    return nearest_units;
+  }
+  */
+  vector<tuple<unsigned, unsigned, Direction, Direction>>
+  get_nearest_units(Team team,
+                    Position position,
+                    UnitTypeBitset bitset = AllUnitBits,
+                    unsigned max_units    = UINT_MAX,
+                    unsigned max_distance = 10,
+                    bool idle_units       = false) const {
+    using Ret = tuple<unsigned, unsigned, Direction, Direction>;
+
+    if (max_units == 0)
+      return vector<Ret>();
+
+    set<Ret, bool(*)(Ret, Ret)> candidates ( [](Ret a, Ret b) { return get<1>(a) < get<1>(b); } );
+
+    const auto nearby_unit_ids = get_nearby_units(team, position, bitset, max_distance, idle_units);
+
+    for (auto unit_id : nearby_unit_ids) {
+      const auto& unit = gc.get_unit(unit_id);
+
+      const auto move_info = calculate_move_to_position(position, to_position(unit.get_map_location()));
+      candidates.insert({ unit_id, get<0>(move_info), get<1>(move_info), get<2>(move_info) });
+
+      if (candidates.size() > max_units)
+        candidates.erase(prev(candidates.end()));
+    }
+    fflush(stdout);
+
+    return vector<Ret>( candidates.begin(), candidates.end() );
+  }
+
+  vector<unsigned>
+  get_nearby_units(Team team,
+                   Position position,
+                   UnitTypeBitset bitset = AllUnitBits,
+                   unsigned max_distance = 10,
+                   bool idle_units = false) const {
+    vector<unsigned> nearby_unit_ids;
+
+    const auto& unit_list = [=] {
+      if (team == my_team) return idle_units ? my_idle_unit_ids : my_unit_ids;
+      return enemy_unit_ids;
+    }();
+
+    for (auto unit_type : AllTypes) if (on_bitset(unit_type, bitset)) {
+      for (auto unit_id : unit_list[unit_type]) {
+        const auto unit = gc.get_unit(unit_id);
+        if (!unit.is_on_map())
+          continue;
+
+        if (calculate_distance(to_position(unit.get_map_location()), position) <= max_distance)
+          nearby_unit_ids.push_back(unit_id);
+      }
+    }
+
+    return nearby_unit_ids;
+  }
 
   // TODO: generalize for multiple results like get_enemy_nearest_robots?
   // Calculate the nearest enemy base from the position given
@@ -634,34 +832,67 @@ private:
     Ret ans = { InvalidPosition, UINT_MAX, Center };
     for (auto enemy_pos : enemy_base_candidates) {
       const auto move = calculate_move_to_position(pos, enemy_pos);
-      if (move.first < get<1>(ans)) {
-        ans = { pos, move.first, move.second };
+      if (get<0>(move) < get<1>(ans)) {
+        ans = { pos, get<0>(move), get<1>(move) };
       }
     }
 
     return ans;
   }
 
-  // TODO: calculate if structure exists instead of passing cur_health
-  // TODO: change return to tuple<unsigned, vector<unsigned>> to return the worker ids that can help building
-  unsigned calculate_rounds_to_build(Position position, UnitType structure_type, unsigned cur_health = UINT_MAX) const {
+  // TODO: change return to tuple<unsigned, vector<unsigned, Direction>> to return the worker ids that can help building
+  unsigned
+  calculate_rounds_to_build(
+    Position position,
+    UnitType structure_type,
+    unsigned cur_health = UINT_MAX
+  ) const {
     const auto x = position.first;
     const auto y = position.second;
 
     vector<unsigned> rounds_workers_to_reach;
     rounds_workers_to_reach.push_back(2000);
 
-    auto workers_near = get_my_nearest_robots({ x, y }, WorkerBit, 4, true, true);
+    //auto workers_near = get_my_nearest_robots({ x, y }, WorkerBit, 4, true, true);
+    const auto workers_near = get_nearest_units(
+      my_team,
+      { x, y },
+      WorkerBit,
+      8,
+      10,
+      true
+    );
+
     for (auto worker : workers_near) {
-      const auto rounds = get<1>(worker);
-      if (rounds != UINT_MAX)
+      const auto worker_id = get<0>(worker);
+
+      // distance to position -> distance to adj -> act on same round that moves
+      const auto dist = to_adjacent_minus(get<1>(worker));
+
+      const auto rounds = to_rounds(dist, get<0>(worker));
+      if (rounds != UINT_MAX) {
         rounds_workers_to_reach.push_back(rounds);
+      }
     }
 
     sort(all(rounds_workers_to_reach));
 
     // Iterate on rounds workers reach the building to estimate the round it will get build
     const auto max_health    = (structure_type == Factory) ? FACTORY_MAX_HEALTH : ROCKET_MAX_HEALTH;
+
+    /*
+    // XXX: get current building health
+    unsigned current_health  = [=] {
+      const auto map_loc = to_map_location(position, my_planet);
+      if (gc.can_sense_location(map_loc) and
+          gc.has_unit_at_location(map_loc) and
+          gc.sense_unit_at_location(map_loc).is_structure() and
+          !gc.sense_unit_at_location(map_loc).structure_is_built())
+        return gc.sense_unit_at_location(map_loc).get_health();
+      return max_health / 4;
+    };
+    */
+
     unsigned current_health  = (cur_health == UINT_MAX) ? max_health / 4 : cur_health;
     unsigned workers_at_work = 0;
     unsigned rounds_taken    = 0;
@@ -682,6 +913,7 @@ private:
     return rounds_taken;
   }
 
+  // TODO: Change return to tuple<Position, vector<unsigned, Direction>>
   Position calculate_best_blueprint_position(UnitType structure_type) const {
     assert(my_planet == Earth);
 
@@ -696,8 +928,9 @@ private:
 
     for (int y = 0; y < earth_initial.size(); y++) {
       for (int x = 0; x < earth_initial[0].size(); x++) {
+        const auto map_loc = MapLocation { Earth, x, y };
         if (!earth_initial[y][x].first or
-            gc.has_unit_at_location({ Earth, x, y }))
+            gc.has_unit_at_location(map_loc))
           continue;
 
         const auto rounds_taken = calculate_rounds_to_build({ x, y }, structure_type);
@@ -742,12 +975,28 @@ private:
         } else {
           // Build
           // TODO: move only workers that help
-          auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
+          //auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
+          auto workers_info = get_nearest_units(
+            my_team,
+            build_position,
+            WorkerBit,
+            8,
+            10,
+            true
+          );
+
+          printf("BUILD\n");
+          printf("Workers assigned: %lu\n", workers_info.size());
+          for (auto worker_info : workers_info)
+            printf("(%u, %u, %d, %d)\n",
+                   get<0>(worker_info), get<1>(worker_info),
+                   get<2>(worker_info), get<3>(worker_info));
+          fflush(stdout);
 
           // Move to structure and try to build if adjacent
-          for (auto worker_ : workers) {
-            const auto worker_id = get<0>(worker_);
-            const auto dir = get<2>(worker_);
+          for (auto worker_info : workers_info) {
+            const auto worker_id = get<0>(worker_info);
+            const auto dir = get<3>(worker_info); // dir unit -> pos
 
             move_unit(worker_id, dir);
             const auto worker = gc.get_unit(worker_id);
@@ -760,32 +1009,59 @@ private:
     } else {
       // Blueprint
       // TODO: move only workers that help
-      auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
-      if (workers.empty()) {
+      //auto workers = get_my_nearest_robots(build_position, WorkerBit, 4, true, true);
+      auto workers_info = get_nearest_units(
+        my_team,
+        build_position,
+        WorkerBit,
+        8,
+        10,
+        true
+      );
+
+      if (workers_info.empty()) {
         printf("Can't build: (%d, %d). No idle workers!\n", map_location.get_x(), map_location.get_y());
         return;
       }
 
+      // Try to blueprint with the first worker
       bool blueprinted = false;
-      const auto& worker = gc.get_unit(get<0>(workers[0]));
-      const auto worker_map_location = worker.get_map_location();
-      if (worker_map_location.is_adjacent_to(map_location)) {
-        const auto direction = worker_map_location.direction_to(map_location);
 
-        if (gc.can_blueprint(worker.get_id(), structure_type, direction)) {
-          gc.blueprint(worker.get_id(), structure_type, direction);
-          set_unit_acted(worker.get_id());
+      {
+        const auto worker_id = get<0>(workers_info[0]);
+        const auto dir       = get<3>(workers_info[0]); // dir unit -> pos
 
-          blueprinted = true;
+        auto worker = gc.get_unit(worker_id);
+        auto worker_map_location = worker.get_map_location();
 
-          printf("Blueprint built at (%d, %d) by %u\n", map_location.get_x(), map_location.get_y(), worker.get_id());
+        // If not adjacent, try to move first
+        if (!worker_map_location.is_adjacent_to(map_location)) {
+          move_unit(worker_id, dir);
+        }
+
+        worker = gc.get_unit(worker_id);
+        worker_map_location = worker.get_map_location();
+        // If is adjacent, try to blueprint
+        if (worker_map_location.is_adjacent_to(map_location)) {
+          const auto direction = worker_map_location.direction_to(map_location);
+
+          if (gc.can_blueprint(worker.get_id(), structure_type, direction)) {
+            gc.blueprint(worker.get_id(), structure_type, direction);
+            set_unit_acted(worker.get_id());
+
+            blueprinted = true;
+
+            printf("Blueprint built at (%d, %d) by %u\n", map_location.get_x(), map_location.get_y(), worker.get_id());
+          }
         }
       }
 
+      workers_info.erase(workers_info.begin());
+
       // Move to structure and try to build if adjacent
-      for (auto worker_info : workers) {
+      for (auto worker_info : workers_info) {
         const auto worker_id = get<0>(worker_info);
-        const auto dir = get<2>(worker_info);
+        const auto dir       = get<3>(worker_info); // dir unit -> pos
 
         move_unit(worker_id, dir);
         const auto worker = gc.get_unit(worker_id);
@@ -795,6 +1071,27 @@ private:
         }
       }
     }
+  }
+
+  vector<unsigned>
+  get_units(
+    Team team,
+    UnitTypeBitset types_bitset,
+    bool idle_units = false
+  ) {
+    // TODO: create a method for this!
+    const auto& unit_list = [=] {
+      if (team == my_team) return idle_units ? my_idle_unit_ids : my_unit_ids;
+      return enemy_unit_ids;
+    }();
+
+    vector<unsigned> units;
+
+    for (auto unit_type : AllTypes) if (on_bitset(unit_type, types_bitset)) {
+      units.insert(units.end(), unit_list[unit_type].begin(), unit_list[unit_type].end());
+    }
+
+    return units;
   }
 
   void set_unit_acted(unsigned unit_id) {
@@ -812,6 +1109,7 @@ private:
     const auto unit = gc.get_unit(unit_id);
     if (unit.get_movement_heat() < 10 and gc.can_move(unit_id, direction)) {
       gc.move_robot(unit_id, direction);
+      printf("Unit %u moving (%d)\n", unit_id, direction);
     }
   }
 
@@ -847,7 +1145,7 @@ private:
   }
 
   void die_unit(unsigned unit_id) {
-    units.erase(unit_id);
+    unit_ids.erase(unit_id);
     for (int i = 0; i < TOTAL_UNIT_TYPES; i++) {
       enemy_unit_ids[i].erase(unit_id);
       my_unit_ids[i].erase(unit_id);
@@ -858,6 +1156,40 @@ private:
       my_blueprint_ids[i].erase(unit_id);
   }
 
+  void replicate_worker(unsigned worker_id, Direction dir) {
+    gc.replicate(worker_id, dir);
+    set_unit_acted(worker_id);
+
+
+    const auto worker     = gc.get_unit(worker_id);
+    const auto new_worker = gc.sense_unit_at_location(worker.get_map_location().add(dir));
+    printf("Worker %u replicating (%d) -> %u\n", worker_id, dir, new_worker.get_id());
+
+    my_unit_ids[Worker].insert(new_worker.get_id());
+    unit_ids.insert(new_worker.get_id());
+  }
+
+
+  // Auxiliar
+  unsigned to_rounds(unsigned distance, unsigned unit_id) const {
+    if (distance == UINT_MAX)
+      return UINT_MAX;
+
+    const auto unit = gc.get_unit(unit_id);
+    return (unit.get_movement_heat() + distance * unit.get_movement_cooldown()) / HEAT_REGEN;
+  }
+
+  unsigned to_adjacent(unsigned distance) const {
+    if (distance == UINT_MAX)
+      return UINT_MAX;
+    return distance == 0 ? distance + 1 : distance - 1;
+  }
+
+  unsigned to_adjacent_minus(unsigned distance) const {
+    if (distance == UINT_MAX)
+      return UINT_MAX;
+    return distance >= 2 ? distance - 2 : 0;
+  }
 
   // -------------------------------
 
@@ -867,7 +1199,7 @@ private:
   GameController gc;
 
   // Constant for whole game
-  const Team         my_team;
+  const Team         my_team, enemy_team;
   const Planet       my_planet;
   const PlanetMap&   earth;
   const PlanetMap&   mars;
@@ -880,7 +1212,7 @@ private:
 
   PlanetMatrix planet_matrix; // current planet, using vision info and units information
 
-  unordered_set<unsigned> units;
+  unordered_set<unsigned> unit_ids;
 
   unordered_set<unsigned> enemy_unit_ids[TOTAL_UNIT_TYPES];
 
