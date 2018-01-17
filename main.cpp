@@ -274,7 +274,7 @@ private:
           return 1.0;
         else if (factory_blueprints > 0)
           //return inverse_linear_ramp(0.2, 0.8, factory_blueprints / static_cast<double>(factories));
-          return 0.6;
+          return 0.8;
 
         return -1.0;
       },
