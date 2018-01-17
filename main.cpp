@@ -1162,7 +1162,7 @@ private:
     set_unit_acted(unit_id);
 
     const auto unit = gc.get_unit(unit_id);
-    if (gc.is_attack_ready() and gc.can_attack(unit_id, target_id)) {
+    if (gc.is_attack_ready(unit_id) and gc.can_attack(unit_id, target_id)) {
       gc.attack(unit_id, target_id);
       printf("Attacking %u -> %u\n", unit_id, target_id);
 
