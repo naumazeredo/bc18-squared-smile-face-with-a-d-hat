@@ -205,8 +205,8 @@ private:
     BuildRocket,
     BuildWorker,
     BuildKnight,
-    /*
     BuildRanger,
+    /*
     BuildMage,
     BuildHealer,
     Harvest,
@@ -242,7 +242,8 @@ private:
     { // BlueprintFactory
       [this] {
         const auto factories = my_unit_ids[Factory].size();
-        return inverse_linear_ramp(0.0, 1.0, factories / static_cast<double>(Consts::Factories));
+        if (factories == 0) return 1.0;
+        return inverse_linear_ramp(0.0, 0.6, factories / static_cast<double>(Consts::Factories));
       },
       [this] {
         printf("-- BlueprintFactory --\n");
@@ -272,7 +273,8 @@ private:
         if (factory_blueprints == 1)
           return 1.0;
         else if (factory_blueprints > 0)
-          return inverse_linear_ramp(0.2, 0.8, factory_blueprints / static_cast<double>(factories));
+          //return inverse_linear_ramp(0.2, 0.8, factory_blueprints / static_cast<double>(factories));
+          return 0.6;
 
         return -1.0;
       },
@@ -322,7 +324,7 @@ private:
 
         const auto total_knights = my_unit_ids[Knight].size();
         if (total_knights < Consts::Knights)
-          return inverse_linear_ramp(0.0, 0.8, total_knights / static_cast<double>(Consts::Knights));
+          return inverse_linear_ramp(0.0, 0.5, total_knights / static_cast<double>(Consts::Knights));
         return -1.0;
       },
       [this] {
@@ -337,6 +339,31 @@ private:
         }
       }
     },
+    { // BuildRanger
+      [this] {
+        // TODO: Consider size of the enemy army (max visible attack units?)
+        // TODO: Don't hardcode total number of knights
+
+        const auto total_factories = my_unit_ids[Factory].size();
+        if (total_factories == 0) return -1.0; // No factories to build
+
+        const auto total_ranger = my_unit_ids[Ranger].size();
+        if (total_ranger < Consts::Rangers)
+          return inverse_linear_ramp(0.0, 0.8, total_ranger / static_cast<double>(Consts::Rangers));
+        return -1.0;
+      },
+      [this] {
+        const auto factories = my_unit_ids[Factory];
+
+        for (auto factory_id : factories) {
+          const auto& factory = gc.get_unit(factory_id);
+          if (gc.can_produce_robot(factory_id, Ranger)) {
+            printf("Factory %u producing Ranger!\n", factory_id);
+            gc.produce_robot(factory_id, Ranger);
+          }
+        }
+      }
+    },
     { // Replicate
       [this] {
         // Only replicate after having money (or after blueprint a factory)
@@ -345,7 +372,12 @@ private:
           return -1.0;
 
         const auto workers = my_unit_ids[Worker].size();
+        /*
         return inverse_linear_ramp(0.0, 0.9, workers / static_cast<double>(Consts::Workers));
+        */
+        if (workers < Consts::Workers)
+          return 0.9;
+        return -1.0;
       },
       [this] {
         printf("-- Replicating --\n");
