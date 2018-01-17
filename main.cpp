@@ -189,11 +189,11 @@ private:
   //
   struct Consts {
     static const unsigned Factories = 6;
-    static const unsigned Knights   = 20;
+    static const unsigned Knights   = 8;
     static const unsigned Rangers   = 12;
     static const unsigned Workers   = 6;
 
-    static const unsigned AttackSearchDistance = 8;
+    static const unsigned AttackSearchDistance = 10;
   };
 
 
@@ -1150,17 +1150,19 @@ private:
   }
 
   void attack_unit(unsigned unit_id, unsigned target_id) {
+    /*
     if (!gc.has_unit(target_id)) {
       printf("Attacking unit not present!\n");
       die_unit(target_id);
       return;
     }
+    */
 
     // FIXME: idleness is only measured getting the movement
     set_unit_acted(unit_id);
 
     const auto unit = gc.get_unit(unit_id);
-    if (unit.get_attack_heat() < 10 and gc.can_attack(unit_id, target_id)) {
+    if (gc.is_attack_ready() and gc.can_attack(unit_id, target_id)) {
       gc.attack(unit_id, target_id);
       printf("Attacking %u -> %u\n", unit_id, target_id);
 
