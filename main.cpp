@@ -301,7 +301,7 @@ private:
         build_at(pos, Factory);
 
         // Readd the action on queue
-        push_action(BuildFactory);
+        //push_action(BuildFactory);
       }
     },
     { // BuildRocket
